@@ -65,8 +65,7 @@ export class RouterEngine {
       requestCount: 0,
     };
   }
-
-  /**
+   /**
    * Selects an API key from Key Pool based on router strategy
    */
   private selectApiKey(
@@ -87,6 +86,7 @@ export class RouterEngine {
         new Date(k.cooldownUntil).getTime() <= now
       ) {
         k.status = 'active';
+        k.cooldownUntil = undefined;
       }
     });
 
@@ -96,7 +96,10 @@ export class RouterEngine {
     if (activeCandidates.length === 0) {
       // If all keys in cooldown, reset cooldown to prevent total outage
       if (availableKeys.length > 0) {
-        availableKeys.forEach((k) => (k.status = 'active'));
+        availableKeys.forEach((k) => {
+          k.status = 'active';
+          k.cooldownUntil = undefined;
+        });
         return this.selectApiKey(provider, attempt);
       }
       return null;
@@ -107,18 +110,19 @@ export class RouterEngine {
     if (state.settings.strategy === 'round-robin') {
       const idx = (roundRobinIndex + attempt) % activeCandidates.length;
       selected = activeCandidates[idx];
-      roundRobinIndex = (roundRobinIndex + 1) % 1000;
+      roundRobinIndex = (roundRobinIndex + 1) % activeCandidates.length;
     } else if (state.settings.strategy === 'failover') {
       const idx = Math.min(attempt, activeCandidates.length - 1);
       selected = activeCandidates[idx];
     } else {
       // Priority
-      selected = activeCandidates[0];
+      const sortedByPriority = [...activeCandidates].sort((a, b) => a.keyIndex - b.keyIndex);
+      const idx = Math.min(attempt, sortedByPriority.length - 1);
+      selected = sortedByPriority[idx];
     }
 
     const rawVal = store.getRawKeyValue(selected.envVarName);
     if (!rawVal) {
-      // Mark missing and retry
       selected.status = 'missing';
       return activeCandidates.length > 1
         ? this.selectApiKey(provider, attempt + 1)
@@ -129,7 +133,7 @@ export class RouterEngine {
   }
 
   /**
-   * Builds model chain: requested or default model -> fallbacks
+   * Builds model cascade: requested model -> default model -> fallback chain
    */
   private buildModelCascade(requestedModel?: string): string[] {
     const state = store.getState();
@@ -177,15 +181,16 @@ export class RouterEngine {
     // Extract system instructions and combines with Agent System Prompt Overlay
     const systemParts: string[] = [];
     if (agentProfile.systemPrompt) {
-      systemParts.push(agentProfile.systemPrompt);
+      systemParts.push(String(agentProfile.systemPrompt).normalize('NFC'));
     }
 
     const filteredMessages: ChatMessage[] = [];
     for (const msg of userMessages) {
+      const cleanContent = String(msg.content || '').normalize('NFC');
       if (msg.role === 'system') {
-        systemParts.push(msg.content);
+        systemParts.push(cleanContent);
       } else {
-        filteredMessages.push(msg);
+        filteredMessages.push({ ...msg, content: cleanContent });
       }
     }
 
@@ -294,7 +299,6 @@ export class RouterEngine {
               },
             };
           } else {
-            // Mock or OpenAI endpoint implementation when key is present
             throw new Error(`Provider ${provider} is not currently configured with an active key.`);
           }
         } catch (err: unknown) {
@@ -302,12 +306,17 @@ export class RouterEngine {
           lastError = errMsg;
           console.warn(`[Hermes Router] Attempt ${totalAttempts} failed on key #${keyItem.keyIndex} (${modelId}): ${errMsg}`);
 
-          // Mark key cooldown on rate-limit or quota error
+          // Mark key cooldown on rate-limit, quota, auth, or connection error
           if (
             errMsg.includes('429') ||
+            errMsg.includes('403') ||
+            errMsg.includes('401') ||
             errMsg.toLowerCase().includes('quota') ||
             errMsg.toLowerCase().includes('rate limit') ||
-            errMsg.toLowerCase().includes('resource_exhausted')
+            errMsg.toLowerCase().includes('resource_exhausted') ||
+            errMsg.toLowerCase().includes('timeout') ||
+            errMsg.toLowerCase().includes('network') ||
+            errMsg.toLowerCase().includes('fetch failed')
           ) {
             store.markKeyCooldown(keyItem.envVarName, state.settings.cooldownMinutes);
           }
@@ -383,15 +392,18 @@ export class RouterEngine {
       },
     });
 
-    // Build prompt text or message turns
-    let contentsPayload: string | { parts: { text: string }[] };
-    if (params.messages.length === 1) {
-      contentsPayload = params.messages[0].content;
+    const normalizedMessages = params.messages.map((m) => ({
+      ...m,
+      content: String(m.content || '').normalize('NFC'),
+    }));
+
+    let contentsPayload: string;
+    if (normalizedMessages.length === 1) {
+      contentsPayload = normalizedMessages[0].content;
     } else {
-      const formattedHistory = params.messages
+      contentsPayload = normalizedMessages
         .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
         .join('\n\n');
-      contentsPayload = formattedHistory;
     }
 
     const genConfig: Record<string, unknown> = {
@@ -399,7 +411,7 @@ export class RouterEngine {
     };
 
     if (params.systemInstruction) {
-      genConfig.systemInstruction = params.systemInstruction;
+      genConfig.systemInstruction = String(params.systemInstruction).normalize('NFC');
     }
 
     const response = await ai.models.generateContent({
@@ -408,10 +420,10 @@ export class RouterEngine {
       config: genConfig,
     });
 
-    const responseText = response.text || '';
+    const responseText = String(response.text || '').normalize('NFC');
 
     // Estimate usage tokens
-    const promptLen = JSON.stringify(params.messages).length;
+    const promptLen = JSON.stringify(normalizedMessages).length;
     const completionLen = responseText.length;
     const prompt_tokens = Math.ceil(promptLen / 4);
     const completion_tokens = Math.ceil(completionLen / 4);

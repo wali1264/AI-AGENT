@@ -15,8 +15,9 @@ async function startServer() {
   // JSON Body parser
   app.use(express.json({ limit: '10mb' }));
 
-  // CORS Middleware
+  // CORS & UTF-8 Middleware
   app.use((req, res, next) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Agent-ID');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');

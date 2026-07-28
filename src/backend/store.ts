@@ -4,6 +4,7 @@ import {
   AgentProfile,
   KeyPoolItem,
   ModelConfig,
+  ProviderType,
   RequestLog,
   RouterSettings,
   ServerState,
@@ -150,47 +151,61 @@ export class StoreManager {
 
   public refreshKeyPoolFromEnv(): void {
     const keys: KeyPoolItem[] = [];
+    const env = process.env;
 
-    // Scan env for GEMINI_API_KEY, GEMINI_KEY_1, GEMINI_KEY_2, GEMINI_KEY_3, etc.
-    const envVars = [
-      { name: 'GEMINI_API_KEY', provider: 'google' as const },
-      { name: 'GEMINI_KEY_1', provider: 'google' as const },
-      { name: 'GEMINI_KEY_2', provider: 'google' as const },
-      { name: 'GEMINI_KEY_3', provider: 'google' as const },
-      { name: 'OPENAI_API_KEY', provider: 'openai' as const },
-      { name: 'ANTHROPIC_API_KEY', provider: 'anthropic' as const },
-    ];
+    // Dynamically scan process.env for all keys matching GEMINI_API_KEY*, GEMINI_KEY*, GOOGLE_API_KEY*, OPENAI_API_KEY*, ANTHROPIC_API_KEY*
+    const matchedEnvVars: { name: string; provider: ProviderType; numIndex: number }[] = [];
 
-    let keyIndex = 1;
-    for (const item of envVars) {
-      const val = process.env[item.name]?.trim();
-      if (val && val !== 'MY_GEMINI_API_KEY') {
-        // Check if existing key state exists to keep counts
-        const existing = this.state.keyPool.find((k) => k.envVarName === item.name);
-        keys.push({
-          keyIndex: keyIndex++,
-          provider: item.provider,
-          envVarName: item.name,
-          maskedKey: this.maskKey(val),
-          status: existing?.status || 'active',
-          cooldownUntil: existing?.cooldownUntil,
-          lastUsed: existing?.lastUsed,
-          successCount: existing?.successCount || 0,
-          errorCount: existing?.errorCount || 0,
-        });
+    for (const keyName of Object.keys(env)) {
+      const val = env[keyName]?.trim();
+      if (!val || val === 'MY_GEMINI_API_KEY' || val === 'undefined' || val === 'null' || val === 'YOUR_KEY_HERE') {
+        continue;
+      }
+
+      let provider: ProviderType | null = null;
+      if (
+        keyName.startsWith('GEMINI_API_KEY') ||
+        keyName.startsWith('GEMINI_KEY') ||
+        keyName.startsWith('GOOGLE_API_KEY')
+      ) {
+        provider = 'google';
+      } else if (keyName.startsWith('OPENAI_API_KEY') || keyName.startsWith('OPENAI_KEY')) {
+        provider = 'openai';
+      } else if (keyName.startsWith('ANTHROPIC_API_KEY') || keyName.startsWith('ANTHROPIC_KEY')) {
+        provider = 'anthropic';
+      }
+
+      if (provider) {
+        // Extract numeric suffix if present, e.g. GEMINI_API_KEY_2 -> 2, GEMINI_API_KEY -> 0
+        const matchNum = keyName.match(/_(\d+)$/);
+        const numIndex = matchNum ? parseInt(matchNum[1], 10) : 0;
+        matchedEnvVars.push({ name: keyName, provider, numIndex });
       }
     }
 
-    // Fallback if no keys in env at all
-    if (keys.length === 0 && process.env.GEMINI_API_KEY) {
+    // Sort keys logically: GEMINI_API_KEY first (0), then _1, _2, _3... up to dynamic N
+    matchedEnvVars.sort((a, b) => {
+      if (a.provider !== b.provider) {
+        return a.provider.localeCompare(b.provider);
+      }
+      return a.numIndex - b.numIndex;
+    });
+
+    let displayIndex = 1;
+    for (const item of matchedEnvVars) {
+      const val = env[item.name]?.trim() || '';
+      const existing = this.state.keyPool.find((k) => k.envVarName === item.name);
+
       keys.push({
-        keyIndex: 1,
-        provider: 'google',
-        envVarName: 'GEMINI_API_KEY',
-        maskedKey: this.maskKey(process.env.GEMINI_API_KEY),
-        status: 'active',
-        successCount: 0,
-        errorCount: 0,
+        keyIndex: displayIndex++,
+        provider: item.provider,
+        envVarName: item.name,
+        maskedKey: this.maskKey(val),
+        status: existing?.status || 'active',
+        cooldownUntil: existing?.cooldownUntil,
+        lastUsed: existing?.lastUsed,
+        successCount: existing?.successCount || 0,
+        errorCount: existing?.errorCount || 0,
       });
     }
 
