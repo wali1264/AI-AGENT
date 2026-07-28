@@ -92,22 +92,26 @@ async function startServer() {
         }
       }
 
-      // Execute Smart Routing
-      const routeResult = await routerEngine.handleChatCompletion(req.body, agentProfile);
+      // Execute Smart Routing (passes res to handle stream: true if requested)
+      const routeResult = await routerEngine.handleChatCompletion(req.body, agentProfile, res);
 
       if (routeResult.error) {
-        res.status(routeResult.error.statusCode).json({
-          error: {
-            message: routeResult.error.message,
-            type: 'router_error',
-            details: routeResult.error.details,
-            hermes_meta: routeResult.hermesMeta,
-          },
-        });
+        if (!res.headersSent) {
+          res.status(routeResult.error.statusCode).json({
+            error: {
+              message: routeResult.error.message,
+              type: 'router_error',
+              details: routeResult.error.details,
+              hermes_meta: routeResult.hermesMeta,
+            },
+          });
+        }
         return;
       }
 
-      res.json(routeResult.response);
+      if (!routeResult.isStreamed && routeResult.response && !res.headersSent) {
+        res.json(routeResult.response);
+      }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Internal Server Error';
       console.error('[Hermes Router Endpoint Error]:', err);

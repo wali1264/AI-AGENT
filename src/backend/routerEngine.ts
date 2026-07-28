@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { Response } from 'express';
 import {
   AgentProfile,
   ChatCompletionRequest,
@@ -14,7 +15,7 @@ let roundRobinIndex = 0;
 
 export interface RouteResult {
   response?: ChatCompletionResponse;
-  streamResponse?: AsyncIterable<unknown>;
+  isStreamed?: boolean;
   error?: {
     statusCode: number;
     message: string;
@@ -170,7 +171,8 @@ export class RouterEngine {
    */
   public async handleChatCompletion(
     reqBody: ChatCompletionRequest,
-    agentProfile: AgentProfile
+    agentProfile: AgentProfile,
+    res?: Response
   ): Promise<RouteResult> {
     const startTime = Date.now();
     const state = store.getState();
@@ -220,6 +222,111 @@ export class RouterEngine {
 
         try {
           if (provider === 'google') {
+            if (reqBody.stream) {
+              let isHeadersSet = false;
+              const completionId = `chatcmpl-hermes-${Date.now()}`;
+              const createdSec = Math.floor(Date.now() / 1000);
+
+              const streamResult = await this.executeGeminiCallStream(
+                {
+                  rawKey,
+                  modelId,
+                  messages: filteredMessages,
+                  systemInstruction: combinedSystemInstruction,
+                  temperature: reqBody.temperature ?? modelConfig?.temperature ?? 0.7,
+                  maxTokens: reqBody.max_tokens ?? modelConfig?.maxOutputTokens ?? 4096,
+                },
+                (chunkText, resStream) => {
+                  if (!isHeadersSet && resStream) {
+                    resStream.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+                    resStream.setHeader('Cache-Control', 'no-cache, no-transform');
+                    resStream.setHeader('Connection', 'keep-alive');
+                    resStream.setHeader('X-Accel-Buffering', 'no');
+                    isHeadersSet = true;
+                  }
+
+                  if (resStream) {
+                    const chunkPayload = {
+                      id: completionId,
+                      object: 'chat.completion.chunk',
+                      created: createdSec,
+                      model: modelId,
+                      choices: [
+                        {
+                          index: 0,
+                          delta: { content: chunkText },
+                          finish_reason: null,
+                        },
+                      ],
+                    };
+                    resStream.write(`data: ${JSON.stringify(chunkPayload)}\n\n`);
+                  }
+                },
+                res
+              );
+
+              if (res) {
+                const stopPayload = {
+                  id: completionId,
+                  object: 'chat.completion.chunk',
+                  created: createdSec,
+                  model: modelId,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: {},
+                      finish_reason: 'stop',
+                    },
+                  ],
+                };
+                res.write(`data: ${JSON.stringify(stopPayload)}\n\n`);
+                res.write('data: [DONE]\n\n');
+                res.end();
+              }
+
+              const latencyMs = Date.now() - startTime;
+              store.markKeySuccess(keyItem.envVarName);
+
+              const isFallback = modelId !== (reqBody.model || state.settings.defaultModelId);
+              const statusType = isFallback ? 'fallback_success' : 'success';
+
+              const logEntry: RequestLog = {
+                id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                timestamp: new Date().toISOString(),
+                agentId: agentProfile.id,
+                agentName: agentProfile.name,
+                requestedModel: reqBody.model || state.settings.defaultModelId,
+                actualModel: modelId,
+                provider,
+                keyIndex: keyItem.keyIndex,
+                status: statusType,
+                statusCode: 200,
+                latencyMs,
+                promptTokens: streamResult.usage.prompt_tokens,
+                completionTokens: streamResult.usage.completion_tokens,
+                totalTokens: streamResult.usage.total_tokens,
+                userPromptSnippet,
+                responseSnippet: streamResult.fullText.slice(0, 150),
+                attempts: totalAttempts,
+              };
+
+              store.addLog(logEntry);
+
+              return {
+                isStreamed: true,
+                hermesMeta: {
+                  agentId: agentProfile.id,
+                  agentName: agentProfile.name,
+                  requestedModel: reqBody.model || state.settings.defaultModelId,
+                  actualModel: modelId,
+                  provider,
+                  keyIndex: keyItem.keyIndex,
+                  attempts: totalAttempts,
+                  latencyMs,
+                },
+              };
+            }
+
             const result = await this.executeGeminiCall({
               rawKey,
               modelId,
@@ -227,7 +334,7 @@ export class RouterEngine {
               systemInstruction: combinedSystemInstruction,
               temperature: reqBody.temperature ?? modelConfig?.temperature ?? 0.7,
               maxTokens: reqBody.max_tokens ?? modelConfig?.maxOutputTokens ?? 4096,
-              stream: Boolean(reqBody.stream),
+              stream: false,
             });
 
             const latencyMs = Date.now() - startTime;
@@ -430,6 +537,85 @@ export class RouterEngine {
 
     return {
       responseText,
+      usage: {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+      },
+    };
+  }
+
+  /**
+   * Executes Gemini API Streaming Call
+   */
+  private async executeGeminiCallStream(
+    params: {
+      rawKey: string;
+      modelId: string;
+      messages: ChatMessage[];
+      systemInstruction?: string;
+      temperature: number;
+      maxTokens: number;
+    },
+    onChunk: (chunkText: string, resStream?: Response) => void,
+    resStream?: Response
+  ): Promise<{
+    fullText: string;
+    usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  }> {
+    const ai = new GoogleGenAI({
+      apiKey: params.rawKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+    const normalizedMessages = params.messages.map((m) => ({
+      ...m,
+      content: String(m.content || '').normalize('NFC'),
+    }));
+
+    let contentsPayload: string;
+    if (normalizedMessages.length === 1) {
+      contentsPayload = normalizedMessages[0].content;
+    } else {
+      contentsPayload = normalizedMessages
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n\n');
+    }
+
+    const genConfig: Record<string, unknown> = {
+      temperature: params.temperature,
+    };
+
+    if (params.systemInstruction) {
+      genConfig.systemInstruction = String(params.systemInstruction).normalize('NFC');
+    }
+
+    const responseStream = await ai.models.generateContentStream({
+      model: params.modelId,
+      contents: contentsPayload,
+      config: genConfig,
+    });
+
+    let fullText = '';
+    for await (const chunk of responseStream) {
+      const chunkText = String(chunk.text || '').normalize('NFC');
+      if (chunkText) {
+        fullText += chunkText;
+        onChunk(chunkText, resStream);
+      }
+    }
+
+    const promptLen = JSON.stringify(normalizedMessages).length;
+    const completionLen = fullText.length;
+    const prompt_tokens = Math.ceil(promptLen / 4);
+    const completion_tokens = Math.ceil(completionLen / 4);
+
+    return {
+      fullText,
       usage: {
         prompt_tokens,
         completion_tokens,
