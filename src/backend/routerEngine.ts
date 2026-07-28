@@ -223,7 +223,6 @@ export class RouterEngine {
         try {
           if (provider === 'google') {
             if (reqBody.stream) {
-              let isHeadersSet = false;
               const completionId = `chatcmpl-hermes-${Date.now()}`;
               const createdSec = Math.floor(Date.now() / 1000);
 
@@ -237,14 +236,6 @@ export class RouterEngine {
                   maxTokens: reqBody.max_tokens ?? modelConfig?.maxOutputTokens ?? 4096,
                 },
                 (chunkText, resStream) => {
-                  if (!isHeadersSet && resStream) {
-                    resStream.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-                    resStream.setHeader('Cache-Control', 'no-cache, no-transform');
-                    resStream.setHeader('Connection', 'keep-alive');
-                    resStream.setHeader('X-Accel-Buffering', 'no');
-                    isHeadersSet = true;
-                  }
-
                   if (resStream) {
                     const chunkPayload = {
                       id: completionId,
@@ -260,6 +251,9 @@ export class RouterEngine {
                       ],
                     };
                     resStream.write(`data: ${JSON.stringify(chunkPayload)}\n\n`);
+                    if (typeof (resStream as any).flush === 'function') {
+                      (resStream as any).flush();
+                    }
                   }
                 },
                 res
@@ -504,13 +498,14 @@ export class RouterEngine {
       content: String(m.content || '').normalize('NFC'),
     }));
 
-    let contentsPayload: string;
+    let contentsPayload: any;
     if (normalizedMessages.length === 1) {
       contentsPayload = normalizedMessages[0].content;
     } else {
-      contentsPayload = normalizedMessages
-        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-        .join('\n\n');
+      contentsPayload = normalizedMessages.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
     }
 
     const genConfig: Record<string, unknown> = {
@@ -577,13 +572,14 @@ export class RouterEngine {
       content: String(m.content || '').normalize('NFC'),
     }));
 
-    let contentsPayload: string;
+    let contentsPayload: any;
     if (normalizedMessages.length === 1) {
       contentsPayload = normalizedMessages[0].content;
     } else {
-      contentsPayload = normalizedMessages
-        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-        .join('\n\n');
+      contentsPayload = normalizedMessages.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
     }
 
     const genConfig: Record<string, unknown> = {
@@ -599,6 +595,18 @@ export class RouterEngine {
       contents: contentsPayload,
       config: genConfig,
     });
+
+    if (resStream && !resStream.headersSent) {
+      resStream.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      if (typeof (resStream as any).flushHeaders === 'function') {
+        (resStream as any).flushHeaders();
+      }
+    }
 
     let fullText = '';
     for await (const chunk of responseStream) {

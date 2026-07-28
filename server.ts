@@ -115,12 +115,14 @@ async function startServer() {
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Internal Server Error';
       console.error('[Hermes Router Endpoint Error]:', err);
-      res.status(500).json({
-        error: {
-          message: errMsg,
-          type: 'internal_server_error',
-        },
-      });
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: {
+            message: errMsg,
+            type: 'internal_server_error',
+          },
+        });
+      }
     }
   });
 
