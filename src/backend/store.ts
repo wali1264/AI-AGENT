@@ -65,13 +65,37 @@ const INITIAL_MODELS: ModelConfig[] = [
     supportsStreaming: false,
   },
   {
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
+    provider: 'google',
+    description: 'مدل نسل ۲.۵ سبک، ایده‌آل و با کیفیت بالا برای پاسخگویی عمومی و کنترل بار کاری',
+    isEnabled: true,
+    isDefault: false,
+    priorityRank: 5,
+    maxOutputTokens: 4096,
+    temperature: 0.7,
+    supportsStreaming: true,
+  },
+  {
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
+    provider: 'google',
+    description: 'مدل پیشرفته نسل ۲.۵ برای استدلال‌های سنگین، برنامه‌نویسی و تحلیل‌های چندوجهی',
+    isEnabled: true,
+    isDefault: false,
+    priorityRank: 6,
+    maxOutputTokens: 8192,
+    temperature: 0.5,
+    supportsStreaming: true,
+  },
+  {
     id: 'gpt-4o',
     name: 'OpenAI GPT-4o (آماده توسعه)',
     provider: 'openai',
     description: 'مدل OpenAI برای معماری چند ارائه‌دهنده‌ای (نیاز به OPENAI_API_KEY دارد)',
     isEnabled: false,
     isDefault: false,
-    priorityRank: 5,
+    priorityRank: 7,
     maxOutputTokens: 4096,
     temperature: 0.7,
     supportsStreaming: true,
@@ -84,7 +108,13 @@ const INITIAL_SETTINGS: RouterSettings = {
   timeoutMs: 30000,
   cooldownMinutes: 5,
   defaultModelId: 'gemini-3.6-flash',
-  fallbackChain: ['gemini-3.6-flash', 'gemini-3.1-pro-preview', 'gemini-3.1-flash-lite'],
+  fallbackChain: [
+    'gemini-3.6-flash',
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+  ],
 };
 
 const INITIAL_AGENTS: AgentProfile[] = [
@@ -222,8 +252,17 @@ export class StoreManager {
       if (fs.existsSync(STATE_FILE)) {
         const raw = fs.readFileSync(STATE_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
+
+        // Merge initial models into loaded models if missing
+        const loadedModels: ModelConfig[] = parsed.models || [];
+        for (const initModel of INITIAL_MODELS) {
+          if (!loadedModels.some((m) => m.id === initModel.id)) {
+            loadedModels.push(initModel);
+          }
+        }
+
         return {
-          models: parsed.models || INITIAL_MODELS,
+          models: loadedModels,
           settings: parsed.settings || INITIAL_SETTINGS,
           agents: parsed.agents || INITIAL_AGENTS,
           keyPool: parsed.keyPool || [],
