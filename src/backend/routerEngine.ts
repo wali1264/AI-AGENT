@@ -6,6 +6,8 @@ import {
   ChatCompletionResponse,
   ChatMessage,
   KeyPoolItem,
+  OpenAiToolCall,
+  OpenAiToolDefinition,
   ProviderType,
   RequestLog,
 } from '../types.js';
@@ -234,9 +236,18 @@ export class RouterEngine {
                   systemInstruction: combinedSystemInstruction,
                   temperature: reqBody.temperature ?? modelConfig?.temperature ?? 0.7,
                   maxTokens: reqBody.max_tokens ?? modelConfig?.maxOutputTokens ?? 4096,
+                  tools: reqBody.tools,
                 },
-                (chunkText, resStream) => {
+                (chunkText, chunkToolCalls, resStream) => {
                   if (resStream) {
+                    const deltaObj: Record<string, unknown> = {};
+                    if (chunkText) {
+                      deltaObj.content = chunkText;
+                    }
+                    if (chunkToolCalls && chunkToolCalls.length > 0) {
+                      deltaObj.tool_calls = chunkToolCalls;
+                    }
+
                     const chunkPayload = {
                       id: completionId,
                       object: 'chat.completion.chunk',
@@ -245,7 +256,7 @@ export class RouterEngine {
                       choices: [
                         {
                           index: 0,
-                          delta: { content: chunkText },
+                          delta: deltaObj,
                           finish_reason: null,
                         },
                       ],
@@ -269,7 +280,10 @@ export class RouterEngine {
                     {
                       index: 0,
                       delta: {},
-                      finish_reason: 'stop',
+                      finish_reason:
+                        streamResult.toolCalls && streamResult.toolCalls.length > 0
+                          ? 'tool_calls'
+                          : 'stop',
                     },
                   ],
                 };
@@ -328,7 +342,7 @@ export class RouterEngine {
               systemInstruction: combinedSystemInstruction,
               temperature: reqBody.temperature ?? modelConfig?.temperature ?? 0.7,
               maxTokens: reqBody.max_tokens ?? modelConfig?.maxOutputTokens ?? 4096,
-              stream: false,
+              tools: reqBody.tools,
             });
 
             const latencyMs = Date.now() - startTime;
@@ -353,11 +367,25 @@ export class RouterEngine {
               completionTokens: result.usage.completion_tokens,
               totalTokens: result.usage.total_tokens,
               userPromptSnippet,
-              responseSnippet: result.responseText.slice(0, 150),
+              responseSnippet:
+                result.toolCalls && result.toolCalls.length > 0
+                  ? `[Tool Calls: ${result.toolCalls.map((t) => t.function.name).join(', ')}]`
+                  : result.responseText.slice(0, 150),
               attempts: totalAttempts,
             };
 
             store.addLog(logEntry);
+
+            const responseMessage: ChatMessage = {
+              role: 'assistant',
+              content:
+                result.toolCalls && result.toolCalls.length > 0
+                  ? result.responseText || null
+                  : result.responseText,
+            };
+            if (result.toolCalls && result.toolCalls.length > 0) {
+              responseMessage.tool_calls = result.toolCalls;
+            }
 
             const responsePayload: ChatCompletionResponse = {
               id: `chatcmpl-hermes-${Date.now()}`,
@@ -367,11 +395,8 @@ export class RouterEngine {
               choices: [
                 {
                   index: 0,
-                  message: {
-                    role: 'assistant',
-                    content: result.responseText,
-                  },
-                  finish_reason: 'stop',
+                  message: responseMessage,
+                  finish_reason: result.finishReason,
                 },
               ],
               usage: result.usage,
@@ -469,6 +494,116 @@ export class RouterEngine {
     };
   }
 
+  private convertOpenAiToolsToGemini(tools?: OpenAiToolDefinition[]): any[] | undefined {
+    if (!tools || !Array.isArray(tools) || tools.length === 0) {
+      return undefined;
+    }
+    const functionDeclarations = tools.map((t) => {
+      const fn = t.function || t;
+      return {
+        name: fn.name,
+        description: fn.description || '',
+        parameters: fn.parameters || { type: 'OBJECT', properties: {} },
+      };
+    });
+    return [{ functionDeclarations }];
+  }
+
+  private mapOpenAiMessagesToGemini(messages: ChatMessage[]): any[] {
+    const toolCallMap = new Map<string, string>();
+    for (const msg of messages) {
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (tc.id && tc.function?.name) {
+            toolCallMap.set(tc.id, tc.function.name);
+          }
+        }
+      }
+    }
+
+    const geminiContents: any[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        continue;
+      }
+
+      if (msg.role === 'user') {
+        geminiContents.push({
+          role: 'user',
+          parts: [{ text: String(msg.content || '') }],
+        });
+      } else if (msg.role === 'assistant') {
+        const parts: any[] = [];
+        if (msg.content) {
+          parts.push({ text: String(msg.content) });
+        }
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          for (const tc of msg.tool_calls) {
+            let args = {};
+            try {
+              args =
+                typeof tc.function.arguments === 'string'
+                  ? JSON.parse(tc.function.arguments)
+                  : tc.function.arguments || {};
+            } catch {
+              args = {};
+            }
+            parts.push({
+              functionCall: {
+                name: tc.function.name,
+                args: args,
+              },
+            });
+          }
+        }
+        if (parts.length === 0) {
+          parts.push({ text: '' });
+        }
+        geminiContents.push({
+          role: 'model',
+          parts,
+        });
+      } else if (msg.role === 'tool' || msg.role === 'function') {
+        const functionName =
+          msg.name ||
+          (msg.tool_call_id ? toolCallMap.get(msg.tool_call_id) : undefined) ||
+          'function';
+        let responseObj: Record<string, unknown> = {};
+        const contentStr =
+          typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+        try {
+          const parsed = JSON.parse(contentStr);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            responseObj = parsed;
+          } else {
+            responseObj = { output: contentStr };
+          }
+        } catch {
+          responseObj = { output: contentStr };
+        }
+
+        geminiContents.push({
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: functionName,
+                response: responseObj,
+              },
+            },
+          ],
+        });
+      }
+    }
+
+    if (geminiContents.length === 0) {
+      geminiContents.push({ role: 'user', parts: [{ text: '' }] });
+    }
+
+    return geminiContents;
+  }
+
   /**
    * Executes Gemini API Call using official @google/genai SDK
    */
@@ -479,9 +614,11 @@ export class RouterEngine {
     systemInstruction?: string;
     temperature: number;
     maxTokens: number;
-    stream?: boolean;
+    tools?: OpenAiToolDefinition[];
   }): Promise<{
     responseText: string;
+    toolCalls?: OpenAiToolCall[];
+    finishReason: string;
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   }> {
     const ai = new GoogleGenAI({
@@ -493,20 +630,7 @@ export class RouterEngine {
       },
     });
 
-    const normalizedMessages = params.messages.map((m) => ({
-      ...m,
-      content: String(m.content || '').normalize('NFC'),
-    }));
-
-    let contentsPayload: any;
-    if (normalizedMessages.length === 1) {
-      contentsPayload = normalizedMessages[0].content;
-    } else {
-      contentsPayload = normalizedMessages.map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }));
-    }
+    const contentsPayload = this.mapOpenAiMessagesToGemini(params.messages);
 
     const genConfig: Record<string, unknown> = {
       temperature: params.temperature,
@@ -516,22 +640,66 @@ export class RouterEngine {
       genConfig.systemInstruction = String(params.systemInstruction).normalize('NFC');
     }
 
+    const toolsPayload = this.convertOpenAiToolsToGemini(params.tools);
+    if (toolsPayload) {
+      genConfig.tools = toolsPayload;
+    }
+
     const response = await ai.models.generateContent({
       model: params.modelId,
       contents: contentsPayload,
       config: genConfig,
     });
 
-    const responseText = String(response.text || '').normalize('NFC');
+    let responseText = '';
+    const toolCalls: OpenAiToolCall[] = [];
+    const candidate = response.candidates?.[0];
+
+    if (candidate?.content?.parts) {
+      for (const part of candidate.content.parts) {
+        if (part.text) {
+          responseText += part.text;
+        }
+        if (part.functionCall) {
+          const callId = `call_${Math.random().toString(36).slice(2, 11)}`;
+          toolCalls.push({
+            id: callId,
+            type: 'function',
+            function: {
+              name: part.functionCall.name,
+              arguments: JSON.stringify(part.functionCall.args || {}),
+            },
+          });
+        }
+      }
+    } else if (response.functionCalls && response.functionCalls.length > 0) {
+      for (const fc of response.functionCalls) {
+        const callId = `call_${Math.random().toString(36).slice(2, 11)}`;
+        toolCalls.push({
+          id: callId,
+          type: 'function',
+          function: {
+            name: fc.name,
+            arguments: JSON.stringify(fc.args || {}),
+          },
+        });
+      }
+    } else {
+      responseText = String(response.text || '').normalize('NFC');
+    }
+
+    const finishReason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
 
     // Estimate usage tokens
-    const promptLen = JSON.stringify(normalizedMessages).length;
-    const completionLen = responseText.length;
+    const promptLen = JSON.stringify(params.messages).length;
+    const completionLen = responseText.length + JSON.stringify(toolCalls).length;
     const prompt_tokens = Math.ceil(promptLen / 4);
     const completion_tokens = Math.ceil(completionLen / 4);
 
     return {
       responseText,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      finishReason,
       usage: {
         prompt_tokens,
         completion_tokens,
@@ -551,11 +719,17 @@ export class RouterEngine {
       systemInstruction?: string;
       temperature: number;
       maxTokens: number;
+      tools?: OpenAiToolDefinition[];
     },
-    onChunk: (chunkText: string, resStream?: Response) => void,
+    onChunk: (
+      chunkText: string,
+      chunkToolCalls: OpenAiToolCall[],
+      resStream?: Response
+    ) => void,
     resStream?: Response
   ): Promise<{
     fullText: string;
+    toolCalls?: OpenAiToolCall[];
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   }> {
     const ai = new GoogleGenAI({
@@ -567,20 +741,7 @@ export class RouterEngine {
       },
     });
 
-    const normalizedMessages = params.messages.map((m) => ({
-      ...m,
-      content: String(m.content || '').normalize('NFC'),
-    }));
-
-    let contentsPayload: any;
-    if (normalizedMessages.length === 1) {
-      contentsPayload = normalizedMessages[0].content;
-    } else {
-      contentsPayload = normalizedMessages.map((m) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }));
-    }
+    const contentsPayload = this.mapOpenAiMessagesToGemini(params.messages);
 
     const genConfig: Record<string, unknown> = {
       temperature: params.temperature,
@@ -588,6 +749,11 @@ export class RouterEngine {
 
     if (params.systemInstruction) {
       genConfig.systemInstruction = String(params.systemInstruction).normalize('NFC');
+    }
+
+    const toolsPayload = this.convertOpenAiToolsToGemini(params.tools);
+    if (toolsPayload) {
+      genConfig.tools = toolsPayload;
     }
 
     const responseStream = await ai.models.generateContentStream({
@@ -609,21 +775,50 @@ export class RouterEngine {
     }
 
     let fullText = '';
+    const toolCalls: OpenAiToolCall[] = [];
+
     for await (const chunk of responseStream) {
-      const chunkText = String(chunk.text || '').normalize('NFC');
+      const candidate = chunk.candidates?.[0];
+      let chunkText = '';
+      const chunkToolCalls: OpenAiToolCall[] = [];
+
+      if (candidate?.content?.parts) {
+        for (const part of candidate.content.parts) {
+          if (part.text) {
+            chunkText += part.text;
+          }
+          if (part.functionCall) {
+            const callId = `call_${Math.random().toString(36).slice(2, 11)}`;
+            const tc: OpenAiToolCall = {
+              id: callId,
+              type: 'function',
+              function: {
+                name: part.functionCall.name,
+                arguments: JSON.stringify(part.functionCall.args || {}),
+              },
+            };
+            chunkToolCalls.push(tc);
+            toolCalls.push(tc);
+          }
+        }
+      } else {
+        chunkText = String(chunk.text || '').normalize('NFC');
+      }
+
       if (chunkText) {
         fullText += chunkText;
-        onChunk(chunkText, resStream);
       }
+      onChunk(chunkText, chunkToolCalls, resStream);
     }
 
-    const promptLen = JSON.stringify(normalizedMessages).length;
-    const completionLen = fullText.length;
+    const promptLen = JSON.stringify(params.messages).length;
+    const completionLen = fullText.length + JSON.stringify(toolCalls).length;
     const prompt_tokens = Math.ceil(promptLen / 4);
     const completion_tokens = Math.ceil(completionLen / 4);
 
     return {
       fullText,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       usage: {
         prompt_tokens,
         completion_tokens,

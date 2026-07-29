@@ -93,9 +93,33 @@ export interface ServerState {
   authRequired: boolean;
 }
 
+export interface OpenAiToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface OpenAiToolDefinition {
+  type?: 'function';
+  function?: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+  name?: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool' | 'function';
+  content?: string | null;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: OpenAiToolCall[];
 }
 
 export interface ChatCompletionRequest {
@@ -104,6 +128,8 @@ export interface ChatCompletionRequest {
   temperature?: number;
   max_tokens?: number;
   stream?: boolean;
+  tools?: OpenAiToolDefinition[];
+  tool_choice?: unknown;
 }
 
 export interface ChatCompletionResponseChoice {
