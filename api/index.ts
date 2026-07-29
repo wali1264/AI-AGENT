@@ -33,8 +33,9 @@ app.get('/api/health', (req: Request, res: Response) => {
 // Models list
 app.get('/api/v1/models', (req: Request, res: Response) => {
   const state = store.getState();
-  const modelsList = state.models
+  const modelsList = [...state.models]
     .filter((m) => m.isEnabled)
+    .sort((a, b) => a.priorityRank - b.priorityRank)
     .map((m) => ({
       id: m.id,
       object: 'model',
