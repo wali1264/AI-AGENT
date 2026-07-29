@@ -119,13 +119,14 @@ export class RouterEngine {
    */
   private selectApiKey(
     provider: ProviderType,
-    attempt: number
+    attempt: number,
+    failedKeysInCurrentModel?: Set<string>
   ): { keyItem: KeyPoolItem; rawKey: string } | null {
     const state = store.getState();
     const now = new Date().getTime();
 
     // Filter active keys for provider
-    let availableKeys = state.keyPool.filter((k) => k.provider === provider);
+    let availableKeys = state.keyPool.filter((k) => k.provider === provider && k.status !== 'missing');
 
     // Check if cooldown expired
     availableKeys.forEach((k) => {
@@ -140,18 +141,36 @@ export class RouterEngine {
     });
 
     // Active candidates
-    const activeCandidates = availableKeys.filter((k) => k.status === 'active');
+    let activeCandidates = availableKeys.filter((k) => k.status === 'active');
+
+    if (failedKeysInCurrentModel && failedKeysInCurrentModel.size > 0) {
+      const nonFailed = activeCandidates.filter((k) => !failedKeysInCurrentModel.has(k.envVarName));
+      if (nonFailed.length > 0) {
+        activeCandidates = nonFailed;
+      }
+    }
 
     if (activeCandidates.length === 0) {
-      // If all keys in cooldown, reset cooldown to prevent total outage
+      // If all active keys in cooldown, reset cooldown ONLY for keys that haven't failed for this specific model attempt
       if (availableKeys.length > 0) {
+        let resetCount = 0;
         availableKeys.forEach((k) => {
-          k.status = 'active';
-          k.cooldownUntil = undefined;
+          if (!failedKeysInCurrentModel?.has(k.envVarName)) {
+            k.status = 'active';
+            k.cooldownUntil = undefined;
+            resetCount++;
+          }
         });
-        return this.selectApiKey(provider, attempt);
+        if (resetCount > 0) {
+          activeCandidates = availableKeys.filter(
+            (k) => k.status === 'active' && !failedKeysInCurrentModel?.has(k.envVarName)
+          );
+        }
       }
-      return null;
+
+      if (activeCandidates.length === 0) {
+        return null;
+      }
     }
 
     let selected: KeyPoolItem;
@@ -174,7 +193,7 @@ export class RouterEngine {
     if (!rawVal) {
       selected.status = 'missing';
       return activeCandidates.length > 1
-        ? this.selectApiKey(provider, attempt + 1)
+        ? this.selectApiKey(provider, attempt + 1, failedKeysInCurrentModel)
         : null;
     }
 
@@ -182,9 +201,9 @@ export class RouterEngine {
   }
 
   /**
-   * Builds model cascade: requested model -> default model -> fallback chain
+   * Builds model cascade: requested model -> default model / tool optimized -> fallback chain
    */
-  private buildModelCascade(requestedModel?: string): string[] {
+  private buildModelCascade(requestedModel?: string, hasToolsOrVision?: boolean): string[] {
     const state = store.getState();
     const enabledModelIds = state.models
       .filter((m) => m.isEnabled)
@@ -196,13 +215,38 @@ export class RouterEngine {
       cascade.push(requestedModel);
     }
 
-    if (!cascade.includes(state.settings.defaultModelId) && enabledModelIds.includes(state.settings.defaultModelId)) {
-      cascade.push(state.settings.defaultModelId);
+    if (hasToolsOrVision) {
+      // Specialized Tool / Computer Use fallback policy: prioritize fast, high-capacity Flash models first
+      const toolPreferredOrder = [
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-2.5-flash',
+        'gemini-3.5-pro',
+        'gemini-2.5-pro',
+        'gemini-3.1-pro-preview',
+      ];
+      for (const mId of toolPreferredOrder) {
+        if (enabledModelIds.includes(mId) && !cascade.includes(mId)) {
+          cascade.push(mId);
+        }
+      }
+    } else {
+      if (!cascade.includes(state.settings.defaultModelId) && enabledModelIds.includes(state.settings.defaultModelId)) {
+        cascade.push(state.settings.defaultModelId);
+      }
+
+      for (const fbId of state.settings.fallbackChain) {
+        if (enabledModelIds.includes(fbId) && !cascade.includes(fbId)) {
+          cascade.push(fbId);
+        }
+      }
     }
 
-    for (const fbId of state.settings.fallbackChain) {
-      if (enabledModelIds.includes(fbId) && !cascade.includes(fbId)) {
-        cascade.push(fbId);
+    // Safety net: append any remaining enabled models
+    for (const mId of enabledModelIds) {
+      if (!cascade.includes(mId)) {
+        cascade.push(mId);
       }
     }
 
@@ -224,7 +268,6 @@ export class RouterEngine {
   ): Promise<RouteResult> {
     const startTime = Date.now();
     const state = store.getState();
-    const modelCascade = this.buildModelCascade(reqBody.model);
 
     const userMessages = reqBody.messages || [];
 
@@ -251,7 +294,24 @@ export class RouterEngine {
 
     // Last user prompt snippet for log
     const lastUserMsg = [...filteredMessages].reverse().find((m) => m.role === 'user')?.content || '';
-    const userPromptSnippet = lastUserMsg.length > 100 ? `${lastUserMsg.slice(0, 100)}...` : lastUserMsg;
+    const userPromptSnippet =
+      typeof lastUserMsg === 'string'
+        ? lastUserMsg.length > 100
+          ? `${lastUserMsg.slice(0, 100)}...`
+          : lastUserMsg
+        : '[Multimodal / Array Content]';
+
+    const hasToolsOrVision =
+      Boolean(reqBody.tools && reqBody.tools.length > 0) ||
+      userMessages.some(
+        (m) =>
+          m.role === 'tool' ||
+          m.role === 'function' ||
+          Boolean(m.tool_calls && m.tool_calls.length > 0) ||
+          Array.isArray(m.content)
+      );
+
+    const modelCascade = this.buildModelCascade(reqBody.model, hasToolsOrVision);
 
     const attemptDetails: AttemptDetail[] = [];
     const requestedModel = reqBody.model || state.settings.defaultModelId;
@@ -260,9 +320,16 @@ export class RouterEngine {
       const modelConfig = state.models.find((m) => m.id === modelId);
       const provider = modelConfig?.provider || 'google';
 
-      for (let keyAttempt = 0; keyAttempt < state.settings.maxRetries; keyAttempt++) {
+      const providerKeys = state.keyPool.filter(
+        (k) => k.provider === provider && k.status !== 'missing'
+      );
+      const availableKeysCount = providerKeys.length > 0 ? providerKeys.length : 1;
+      const maxKeyAttempts = Math.min(state.settings.maxRetries, availableKeysCount);
+      const failedKeysForThisModel = new Set<string>();
+
+      for (let keyAttempt = 0; keyAttempt < maxKeyAttempts; keyAttempt++) {
         totalAttempts++;
-        const keySelection = this.selectApiKey(provider, keyAttempt);
+        const keySelection = this.selectApiKey(provider, keyAttempt, failedKeysForThisModel);
 
         if (!keySelection) {
           lastError = `No active API key available for provider ${provider}`;
@@ -276,10 +343,11 @@ export class RouterEngine {
             success: false,
             timestamp: new Date().toISOString(),
           });
-          continue;
+          break; // move to next fallback model
         }
 
         const { keyItem, rawKey } = keySelection;
+        failedKeysForThisModel.add(keyItem.envVarName);
 
         try {
           if (provider === 'google') {
@@ -628,6 +696,58 @@ export class RouterEngine {
     };
   }
 
+  private parseContentToParts(content: any): any[] {
+    if (!content) return [{ text: '' }];
+    if (typeof content === 'string') {
+      return [{ text: content.normalize('NFC') }];
+    }
+    if (Array.isArray(content)) {
+      const parts: any[] = [];
+      for (const item of content) {
+        if (!item) continue;
+        if (typeof item === 'string') {
+          parts.push({ text: item.normalize('NFC') });
+        } else if (typeof item === 'object') {
+          if (item.type === 'text' && typeof item.text === 'string') {
+            parts.push({ text: item.text.normalize('NFC') });
+          } else if (
+            (item.type === 'image_url' || item.type === 'image') &&
+            item.image_url?.url
+          ) {
+            const urlStr = String(item.image_url.url);
+            if (urlStr.startsWith('data:')) {
+              const matches = urlStr.match(/^data:([^;]+);base64,(.+)$/);
+              if (matches) {
+                parts.push({
+                  inlineData: {
+                    mimeType: matches[1],
+                    data: matches[2],
+                  },
+                });
+              } else {
+                parts.push({ text: `[Image: ${urlStr.slice(0, 40)}...]` });
+              }
+            } else {
+              parts.push({ text: `[Image URL: ${urlStr}]` });
+            }
+          } else if (item.inline_data || item.inlineData) {
+            const idata = item.inline_data || item.inlineData;
+            parts.push({
+              inlineData: {
+                mimeType: idata.mime_type || idata.mimeType || 'image/png',
+                data: idata.data,
+              },
+            });
+          } else if (item.text) {
+            parts.push({ text: String(item.text).normalize('NFC') });
+          }
+        }
+      }
+      return parts.length > 0 ? parts : [{ text: JSON.stringify(content) }];
+    }
+    return [{ text: JSON.stringify(content) }];
+  }
+
   private convertOpenAiToolsToGemini(tools?: OpenAiToolDefinition[]): any[] | undefined {
     if (!tools || !Array.isArray(tools) || tools.length === 0) {
       return undefined;
@@ -665,12 +785,12 @@ export class RouterEngine {
       if (msg.role === 'user') {
         geminiContents.push({
           role: 'user',
-          parts: [{ text: String(msg.content || '') }],
+          parts: this.parseContentToParts(msg.content),
         });
       } else if (msg.role === 'assistant') {
         const parts: any[] = [];
         if (msg.content) {
-          parts.push({ text: String(msg.content) });
+          parts.push(...this.parseContentToParts(msg.content));
         }
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const tc of msg.tool_calls) {
