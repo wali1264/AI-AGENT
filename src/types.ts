@@ -14,6 +14,8 @@ export interface ModelConfig {
   temperature: number;
   thinkingLevel?: 'HIGH' | 'LOW' | 'MINIMAL';
   supportsStreaming: boolean;
+  category?: 'chat' | 'image' | 'embedding';
+  capabilities?: ('chat' | 'vision' | 'tools' | 'image-gen')[];
 }
 
 export interface RouterSettings {

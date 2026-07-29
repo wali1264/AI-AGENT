@@ -33,6 +33,9 @@ export interface LastRequestDebug {
   attempts: number;
   fallbackUsed: boolean;
   errorReason: string | null;
+  reason?: string;
+  failedModels?: string[];
+  excludedModels?: string[];
   timestamp: string;
   attemptDetails: AttemptDetail[];
 }
@@ -43,6 +46,10 @@ export interface RouteResult {
   error?: {
     statusCode: number;
     message: string;
+    reason?: string;
+    failed_models?: string[];
+    excluded_models?: string[];
+    attempts?: number;
     details?: string;
   };
   hermesMeta: {
@@ -72,6 +79,8 @@ export class RouterEngine {
       .map((m) => ({
         id: m.id,
         name: m.name,
+        category: m.category || 'chat',
+        capabilities: m.capabilities || ['chat'],
         priorityRank: m.priorityRank,
         isDefault: m.isDefault,
       }));
@@ -120,28 +129,32 @@ export class RouterEngine {
   private selectApiKey(
     provider: ProviderType,
     attempt: number,
-    failedKeysInCurrentModel?: Set<string>
+    failedKeysInCurrentModel?: Set<string>,
+    requestQuotaExhaustedKeys?: Set<string>
   ): { keyItem: KeyPoolItem; rawKey: string } | null {
     const state = store.getState();
     const now = new Date().getTime();
 
-    // Filter active keys for provider
+    // Filter available keys for provider
     let availableKeys = state.keyPool.filter((k) => k.provider === provider && k.status !== 'missing');
 
-    // Check if cooldown expired
+    // Check if cooldown expired (unless quota exhausted in current request session)
     availableKeys.forEach((k) => {
       if (
         k.status === 'cooldown' &&
         k.cooldownUntil &&
-        new Date(k.cooldownUntil).getTime() <= now
+        new Date(k.cooldownUntil).getTime() <= now &&
+        !requestQuotaExhaustedKeys?.has(k.envVarName)
       ) {
         k.status = 'active';
         k.cooldownUntil = undefined;
       }
     });
 
-    // Active candidates
-    let activeCandidates = availableKeys.filter((k) => k.status === 'active');
+    // Active candidates excluding current model failed keys AND quota exhausted keys
+    let activeCandidates = availableKeys.filter(
+      (k) => k.status === 'active' && !requestQuotaExhaustedKeys?.has(k.envVarName)
+    );
 
     if (failedKeysInCurrentModel && failedKeysInCurrentModel.size > 0) {
       const nonFailed = activeCandidates.filter((k) => !failedKeysInCurrentModel.has(k.envVarName));
@@ -151,11 +164,11 @@ export class RouterEngine {
     }
 
     if (activeCandidates.length === 0) {
-      // If all active keys in cooldown, reset cooldown ONLY for keys that haven't failed for this specific model attempt
+      // Reset cooldown ONLY for keys that haven't failed for this model AND are not quota exhausted
       if (availableKeys.length > 0) {
         let resetCount = 0;
         availableKeys.forEach((k) => {
-          if (!failedKeysInCurrentModel?.has(k.envVarName)) {
+          if (!failedKeysInCurrentModel?.has(k.envVarName) && !requestQuotaExhaustedKeys?.has(k.envVarName)) {
             k.status = 'active';
             k.cooldownUntil = undefined;
             resetCount++;
@@ -163,7 +176,10 @@ export class RouterEngine {
         });
         if (resetCount > 0) {
           activeCandidates = availableKeys.filter(
-            (k) => k.status === 'active' && !failedKeysInCurrentModel?.has(k.envVarName)
+            (k) =>
+              k.status === 'active' &&
+              !failedKeysInCurrentModel?.has(k.envVarName) &&
+              !requestQuotaExhaustedKeys?.has(k.envVarName)
           );
         }
       }
@@ -193,7 +209,7 @@ export class RouterEngine {
     if (!rawVal) {
       selected.status = 'missing';
       return activeCandidates.length > 1
-        ? this.selectApiKey(provider, attempt + 1, failedKeysInCurrentModel)
+        ? this.selectApiKey(provider, attempt + 1, failedKeysInCurrentModel, requestQuotaExhaustedKeys)
         : null;
     }
 
@@ -202,16 +218,33 @@ export class RouterEngine {
 
   /**
    * Builds model cascade: requested model -> default model / tool optimized -> fallback chain
+   * Filters out models that are image-only for chat/tool requests.
    */
-  private buildModelCascade(requestedModel?: string, hasToolsOrVision?: boolean): string[] {
+  private buildModelCascade(
+    requestedModel?: string,
+    hasToolsOrVision?: boolean
+  ): { cascade: string[]; excludedModels: string[] } {
     const state = store.getState();
-    const enabledModelIds = state.models
-      .filter((m) => m.isEnabled)
-      .map((m) => m.id);
+    const enabledModels = state.models.filter((m) => m.isEnabled);
 
+    const excludedModels: string[] = [];
+
+    // Filter out image-only models (e.g. gemini-3.1-flash-image) for text/chat/tool requests
+    const validChatModels = enabledModels.filter((m) => {
+      if (requestedModel && m.id === requestedModel) {
+        return true;
+      }
+      if (m.category === 'image') {
+        excludedModels.push(`${m.id} because incompatible capability (image generation model)`);
+        return false;
+      }
+      return true;
+    });
+
+    const validChatModelIds = validChatModels.map((m) => m.id);
     const cascade: string[] = [];
 
-    if (requestedModel && enabledModelIds.includes(requestedModel)) {
+    if (requestedModel && validChatModelIds.includes(requestedModel)) {
       cascade.push(requestedModel);
     }
 
@@ -227,24 +260,24 @@ export class RouterEngine {
         'gemini-3.1-pro-preview',
       ];
       for (const mId of toolPreferredOrder) {
-        if (enabledModelIds.includes(mId) && !cascade.includes(mId)) {
+        if (validChatModelIds.includes(mId) && !cascade.includes(mId)) {
           cascade.push(mId);
         }
       }
     } else {
-      if (!cascade.includes(state.settings.defaultModelId) && enabledModelIds.includes(state.settings.defaultModelId)) {
+      if (!cascade.includes(state.settings.defaultModelId) && validChatModelIds.includes(state.settings.defaultModelId)) {
         cascade.push(state.settings.defaultModelId);
       }
 
       for (const fbId of state.settings.fallbackChain) {
-        if (enabledModelIds.includes(fbId) && !cascade.includes(fbId)) {
+        if (validChatModelIds.includes(fbId) && !cascade.includes(fbId)) {
           cascade.push(fbId);
         }
       }
     }
 
-    // Safety net: append any remaining enabled models
-    for (const mId of enabledModelIds) {
+    // Safety net: append any remaining valid chat models only
+    for (const mId of validChatModelIds) {
       if (!cascade.includes(mId)) {
         cascade.push(mId);
       }
@@ -255,7 +288,7 @@ export class RouterEngine {
       cascade.push('gemini-3.6-flash');
     }
 
-    return cascade;
+    return { cascade, excludedModels };
   }
 
   /**
@@ -311,10 +344,16 @@ export class RouterEngine {
           Array.isArray(m.content)
       );
 
-    const modelCascade = this.buildModelCascade(reqBody.model, hasToolsOrVision);
+    const { cascade: modelCascade, excludedModels } = this.buildModelCascade(
+      reqBody.model,
+      hasToolsOrVision
+    );
 
     const attemptDetails: AttemptDetail[] = [];
     const requestedModel = reqBody.model || state.settings.defaultModelId;
+
+    const failedModels = new Set<string>();
+    const requestQuotaExhaustedKeys = new Set<string>();
 
     for (const modelId of modelCascade) {
       const modelConfig = state.models.find((m) => m.id === modelId);
@@ -323,13 +362,32 @@ export class RouterEngine {
       const providerKeys = state.keyPool.filter(
         (k) => k.provider === provider && k.status !== 'missing'
       );
+
+      // Early exit if all provider keys are known to be quota exhausted in this session
+      const allKeysExhaustedInSession =
+        providerKeys.length > 0 &&
+        providerKeys.every((k) => requestQuotaExhaustedKeys.has(k.envVarName));
+
+      if (allKeysExhaustedInSession) {
+        console.warn(
+          `[Hermes Router] All ${providerKeys.length} keys for provider '${provider}' have exceeded quota (429 RESOURCE_EXHAUSTED). Halting model cascade early.`
+        );
+        lastError = `All ${providerKeys.length} API keys for provider '${provider}' exceeded quota (429 RESOURCE_EXHAUSTED).`;
+        break;
+      }
+
       const availableKeysCount = providerKeys.length > 0 ? providerKeys.length : 1;
       const maxKeyAttempts = Math.min(state.settings.maxRetries, availableKeysCount);
       const failedKeysForThisModel = new Set<string>();
 
       for (let keyAttempt = 0; keyAttempt < maxKeyAttempts; keyAttempt++) {
         totalAttempts++;
-        const keySelection = this.selectApiKey(provider, keyAttempt, failedKeysForThisModel);
+        const keySelection = this.selectApiKey(
+          provider,
+          keyAttempt,
+          failedKeysForThisModel,
+          requestQuotaExhaustedKeys
+        );
 
         if (!keySelection) {
           lastError = `No active API key available for provider ${provider}`;
@@ -599,6 +657,7 @@ export class RouterEngine {
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : String(err);
           lastError = errMsg;
+          failedModels.add(modelId);
 
           const nextFallback = modelCascade[modelCascade.indexOf(modelId) + 1] || 'none';
 
@@ -622,14 +681,18 @@ export class RouterEngine {
             error_reason: errMsg,
           });
 
-          // Mark key cooldown on rate-limit, quota, auth, or connection error
-          if (
+          const isQuotaError =
             errMsg.includes('429') ||
-            errMsg.includes('403') ||
-            errMsg.includes('401') ||
             errMsg.toLowerCase().includes('quota') ||
             errMsg.toLowerCase().includes('rate limit') ||
-            errMsg.toLowerCase().includes('resource_exhausted') ||
+            errMsg.toLowerCase().includes('resource_exhausted');
+
+          if (isQuotaError) {
+            requestQuotaExhaustedKeys.add(keyItem.envVarName);
+            store.markKeyCooldown(keyItem.envVarName, state.settings.cooldownMinutes);
+          } else if (
+            errMsg.includes('403') ||
+            errMsg.includes('401') ||
             errMsg.toLowerCase().includes('timeout') ||
             errMsg.toLowerCase().includes('network') ||
             errMsg.toLowerCase().includes('fetch failed')
@@ -640,8 +703,25 @@ export class RouterEngine {
       }
     }
 
-    // All attempts exhausted
+    // All attempts exhausted or stopped early
     const latencyMs = Date.now() - startTime;
+    const failedModelsList = Array.from(failedModels);
+
+    const providerKeysCount = state.keyPool.filter(
+      (k) => k.provider === 'google' && k.status !== 'missing'
+    ).length;
+
+    let failureReason = 'unknown_failure';
+    if (
+      requestQuotaExhaustedKeys.size >= providerKeysCount &&
+      providerKeysCount > 0
+    ) {
+      failureReason = 'all_google_keys_exceeded_quota';
+    } else if (failedModelsList.length > 0) {
+      failureReason = 'key_exhausted_or_model_unavailable';
+    } else {
+      failureReason = 'no_active_keys_or_models';
+    }
 
     this.lastRequestDebug = {
       requestedModel,
@@ -649,7 +729,10 @@ export class RouterEngine {
       keyIndex: 0,
       attempts: totalAttempts,
       fallbackUsed: true,
-      errorReason: lastError || 'Exceeded retries across all available API keys and model fallbacks.',
+      errorReason: lastError || 'Exceeded retries across available API keys and model fallbacks.',
+      reason: failureReason,
+      failedModels: failedModelsList,
+      excludedModels,
       timestamp: new Date().toISOString(),
       attemptDetails,
     };
@@ -660,7 +743,7 @@ export class RouterEngine {
       agentId: agentProfile.id,
       agentName: agentProfile.name,
       requestedModel,
-      actualModel: requestedModel,
+      actualModel: 'none',
       provider: 'google',
       keyIndex: 0,
       status: 'error',
@@ -669,9 +752,9 @@ export class RouterEngine {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
-      errorDetails: lastError || 'All models and API keys failed',
+      errorDetails: `[Reason: ${failureReason}] ${lastError || ''}`,
       userPromptSnippet,
-      responseSnippet: 'خطا در برقراری ارتباط با سرویس‌های هوش مصنوعی',
+      responseSnippet: `[Failed: ${failureReason}] ${lastError || ''}`,
       attempts: totalAttempts,
     };
 
@@ -680,7 +763,11 @@ export class RouterEngine {
     return {
       error: {
         statusCode: 502,
-        message: 'Hermes Cloud Router Failed: Exceeded retries across all available API keys and model fallbacks.',
+        message: 'Hermes Cloud Router Failed: Exceeded retries across available API keys and model fallbacks.',
+        reason: failureReason,
+        failed_models: failedModelsList,
+        excluded_models: excludedModels,
+        attempts: totalAttempts,
         details: lastError,
       },
       hermesMeta: {

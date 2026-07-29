@@ -27,6 +27,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 4096,
     temperature: 0.7,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-3.5-pro',
@@ -39,6 +41,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 8192,
     temperature: 0.5,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-3.5-flash',
@@ -51,6 +55,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 4096,
     temperature: 0.7,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-3.1-pro-preview',
@@ -63,6 +69,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 8192,
     temperature: 0.5,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-3.1-flash-lite',
@@ -75,18 +83,22 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 2048,
     temperature: 0.7,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-3.1-flash-image',
     name: 'Gemini 3.1 Flash Image',
     provider: 'google',
-    description: 'مدل تخصصی تولید تصویر و تحلیل بصری پیشرفته',
+    description: 'مدل تخصصی تولید تصویر و تحلیل بصری پیشرفته (غیرمجاز برای fallback چت متنی)',
     isEnabled: true,
     isDefault: false,
     priorityRank: 6,
     maxOutputTokens: 4096,
     temperature: 0.7,
     supportsStreaming: false,
+    category: 'image',
+    capabilities: ['image-gen', 'vision'],
   },
   {
     id: 'gemini-2.5-pro',
@@ -99,6 +111,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 8192,
     temperature: 0.5,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-2.5-flash',
@@ -111,6 +125,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 4096,
     temperature: 0.7,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-1.5-pro',
@@ -123,6 +139,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 8192,
     temperature: 0.5,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gemini-1.5-flash',
@@ -135,6 +153,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 4096,
     temperature: 0.7,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
   {
     id: 'gpt-4o',
@@ -147,6 +167,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     maxOutputTokens: 4096,
     temperature: 0.7,
     supportsStreaming: true,
+    category: 'chat',
+    capabilities: ['chat', 'vision', 'tools'],
   },
 ];
 
@@ -303,7 +325,7 @@ export class StoreManager {
         const raw = fs.readFileSync(STATE_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
 
-        // Merge initial models into loaded models if missing, and sync priorityRank
+        // Merge initial models into loaded models if missing, and sync priorityRank & capabilities
         const loadedModels: ModelConfig[] = parsed.models || [];
         for (const initModel of INITIAL_MODELS) {
           const existing = loadedModels.find((m) => m.id === initModel.id);
@@ -311,6 +333,8 @@ export class StoreManager {
             loadedModels.push({ ...initModel });
           } else {
             existing.priorityRank = initModel.priorityRank;
+            existing.category = initModel.category;
+            existing.capabilities = initModel.capabilities;
           }
         }
         loadedModels.sort((a, b) => a.priorityRank - b.priorityRank);

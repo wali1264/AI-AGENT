@@ -113,6 +113,10 @@ app.post('/api/v1/chat/completions', async (req: Request, res: Response) => {
           error: {
             message: routeResult.error.message,
             type: 'router_error',
+            reason: routeResult.error.reason,
+            failed_models: routeResult.error.failed_models,
+            excluded_models: routeResult.error.excluded_models,
+            attempts: routeResult.error.attempts,
             details: routeResult.error.details,
             hermes_meta: routeResult.hermesMeta,
           },
