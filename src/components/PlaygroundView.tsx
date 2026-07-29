@@ -26,7 +26,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
   const agents = state?.agents || [];
-  const models = state?.models.filter((m) => m.isEnabled) || [];
+  const models = [...(state?.models.filter((m) => m.isEnabled) || [])].sort((a, b) => a.priorityRank - b.priorityRank);
   const activeAgent = agents.find((a) => a.id === selectedAgentId) || agents[0];
 
   const handleSendTestRequest = async () => {

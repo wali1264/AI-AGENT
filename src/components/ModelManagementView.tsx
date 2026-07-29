@@ -11,16 +11,36 @@ export const ModelManagementView: React.FC<ModelManagementViewProps> = ({
   state,
   onSaveModels,
 }) => {
-  const [models, setModels] = useState<ModelConfig[]>(state?.models || []);
+  const [models, setModels] = useState<ModelConfig[]>(() => {
+    const list = state?.models || [];
+    return [...list].sort((a, b) => a.priorityRank - b.priorityRank);
+  });
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Sync state if prop changes
   React.useEffect(() => {
     if (state?.models) {
-      setModels(state.models);
+      const sorted = [...state.models].sort((a, b) => a.priorityRank - b.priorityRank);
+      setModels(sorted);
     }
   }, [state]);
+
+  const getModelBadge = (id: string) => {
+    if (id.includes('3.6')) {
+      return { label: 'پرفروغ‌ترین (3.6 Flagship)', bg: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
+    }
+    if (id.includes('3.5')) {
+      return { label: 'نسل ۳.۵ (3.5 High)', bg: 'bg-blue-100 text-blue-800 border-blue-200' };
+    }
+    if (id.includes('3.1')) {
+      return { label: 'نسل ۳.۱ (3.1 Balanced)', bg: 'bg-indigo-100 text-indigo-800 border-indigo-200' };
+    }
+    if (id.includes('2.5')) {
+      return { label: 'نسل ۲.۵ (2.5 Fast)', bg: 'bg-amber-100 text-amber-800 border-amber-200' };
+    }
+    return { label: 'نسل ۱.۵ (1.5 Legacy)', bg: 'bg-gray-100 text-gray-700 border-gray-200' };
+  };
 
   const handleToggleEnable = (id: string) => {
     setModels((prev) =>
@@ -121,8 +141,16 @@ export const ModelManagementView: React.FC<ModelManagementViewProps> = ({
                     <code className="text-xs font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
                       {model.id}
                     </code>
+                    {(() => {
+                      const badge = getModelBadge(model.id);
+                      return (
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${badge.bg}`}>
+                          {badge.label}
+                        </span>
+                      );
+                    })()}
                     {model.isDefault && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-600 text-white shadow-xs">
                         مدل پیش‌فرض اصلی
                       </span>
                     )}

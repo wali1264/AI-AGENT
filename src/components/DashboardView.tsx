@@ -204,18 +204,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ state, onNavigate 
           <div className="space-y-2">
             {settings.fallbackChain.map((modelId, index) => {
               const model = state.models.find((m) => m.id === modelId);
+              const is36 = modelId.includes('3.6');
+              const is35 = modelId.includes('3.5');
+              const is31 = modelId.includes('3.1');
+              const is25 = modelId.includes('2.5');
+
               return (
                 <div
                   key={modelId}
                   className="flex items-center justify-between p-2.5 rounded-lg bg-gray-50 border border-gray-100 text-xs"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="w-5 h-5 rounded bg-gray-200 text-gray-600 font-mono font-bold flex items-center justify-center text-[10px]">
+                    <span className="w-5 h-5 rounded bg-blue-100 text-blue-700 font-mono font-bold flex items-center justify-center text-[10px]">
                       {index + 1}
                     </span>
                     <span className="font-mono font-semibold text-gray-800">
                       {model?.name || modelId}
                     </span>
+                    {is36 && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 text-emerald-800">
+                        3.6 Flagship
+                      </span>
+                    )}
+                    {is35 && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-100 text-blue-800">
+                        3.5 High
+                      </span>
+                    )}
+                    {is31 && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-100 text-indigo-800">
+                        3.1 Balanced
+                      </span>
+                    )}
+                    {is25 && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800">
+                        2.5 Fast
+                      </span>
+                    )}
                   </div>
                   <span className="text-[11px] text-gray-400 font-mono">
                     {modelId}
