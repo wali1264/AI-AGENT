@@ -116,8 +116,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     id: 'gemini-1.5-pro',
     name: 'Gemini 1.5 Pro',
     provider: 'google',
-    description: 'مدل نسل ۱.۵ قدرتمند با پنجره کانتکست بالا',
-    isEnabled: true,
+    description: 'مدل نسل ۱.۵ قدیمی (غیرفعال پیش‌فرض)',
+    isEnabled: false,
     isDefault: false,
     priorityRank: 9,
     maxOutputTokens: 8192,
@@ -128,8 +128,8 @@ const INITIAL_MODELS: ModelConfig[] = [
     id: 'gemini-1.5-flash',
     name: 'Gemini 1.5 Flash',
     provider: 'google',
-    description: 'مدل نسل ۱.۵ سبک و اقتصادی برای پاسخگویی سریع',
-    isEnabled: true,
+    description: 'مدل نسل ۱.۵ قدیمی (غیرفعال پیش‌فرض)',
+    isEnabled: false,
     isDefault: false,
     priorityRank: 10,
     maxOutputTokens: 4096,
@@ -164,8 +164,6 @@ const INITIAL_SETTINGS: RouterSettings = {
     'gemini-3.1-flash-lite',
     'gemini-2.5-pro',
     'gemini-2.5-flash',
-    'gemini-1.5-pro',
-    'gemini-1.5-flash',
   ],
 };
 
@@ -317,9 +315,16 @@ export class StoreManager {
         }
         loadedModels.sort((a, b) => a.priorityRank - b.priorityRank);
 
+        const loadedSettings: RouterSettings = parsed.settings || INITIAL_SETTINGS;
+        if (Array.isArray(loadedSettings.fallbackChain)) {
+          loadedSettings.fallbackChain = loadedSettings.fallbackChain.filter(
+            (id) => id !== 'gemini-1.5-flash' && id !== 'gemini-1.5-pro'
+          );
+        }
+
         return {
           models: loadedModels,
-          settings: parsed.settings || INITIAL_SETTINGS,
+          settings: loadedSettings,
           agents: parsed.agents || INITIAL_AGENTS,
           keyPool: parsed.keyPool || [],
           logs: parsed.logs || [],

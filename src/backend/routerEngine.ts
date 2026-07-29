@@ -15,6 +15,28 @@ import { store } from './store.js';
 
 let roundRobinIndex = 0;
 
+export interface AttemptDetail {
+  requested_model: string;
+  actual_model: string;
+  key_index: number;
+  attempt_number: number;
+  fallback_model: string;
+  error_reason?: string;
+  success: boolean;
+  timestamp: string;
+}
+
+export interface LastRequestDebug {
+  requestedModel: string;
+  selectedModel: string;
+  keyIndex: number;
+  attempts: number;
+  fallbackUsed: boolean;
+  errorReason: string | null;
+  timestamp: string;
+  attemptDetails: AttemptDetail[];
+}
+
 export interface RouteResult {
   response?: ChatCompletionResponse;
   isStreamed?: boolean;
@@ -36,6 +58,30 @@ export interface RouteResult {
 }
 
 export class RouterEngine {
+  private lastRequestDebug: LastRequestDebug | null = null;
+
+  public getLastRequestDebug(): LastRequestDebug | null {
+    return this.lastRequestDebug;
+  }
+
+  public getRuntimeModelsInfo() {
+    const state = store.getState();
+    const activeModels = state.models
+      .filter((m) => m.isEnabled)
+      .sort((a, b) => a.priorityRank - b.priorityRank)
+      .map((m) => ({
+        id: m.id,
+        name: m.name,
+        priorityRank: m.priorityRank,
+        isDefault: m.isDefault,
+      }));
+
+    return {
+      defaultModelId: state.settings.defaultModelId,
+      activeModels,
+      fallbackChain: state.settings.fallbackChain,
+    };
+  }
   /**
    * Resolves calling agent from Authorization header or X-Agent-ID
    */
@@ -207,6 +253,9 @@ export class RouterEngine {
     const lastUserMsg = [...filteredMessages].reverse().find((m) => m.role === 'user')?.content || '';
     const userPromptSnippet = lastUserMsg.length > 100 ? `${lastUserMsg.slice(0, 100)}...` : lastUserMsg;
 
+    const attemptDetails: AttemptDetail[] = [];
+    const requestedModel = reqBody.model || state.settings.defaultModelId;
+
     for (const modelId of modelCascade) {
       const modelConfig = state.models.find((m) => m.id === modelId);
       const provider = modelConfig?.provider || 'google';
@@ -217,6 +266,16 @@ export class RouterEngine {
 
         if (!keySelection) {
           lastError = `No active API key available for provider ${provider}`;
+          attemptDetails.push({
+            requested_model: requestedModel,
+            actual_model: modelId,
+            key_index: keyAttempt + 1,
+            attempt_number: totalAttempts,
+            fallback_model: modelCascade[modelCascade.indexOf(modelId) + 1] || 'none',
+            error_reason: lastError,
+            success: false,
+            timestamp: new Date().toISOString(),
+          });
           continue;
         }
 
@@ -295,15 +354,36 @@ export class RouterEngine {
               const latencyMs = Date.now() - startTime;
               store.markKeySuccess(keyItem.envVarName);
 
-              const isFallback = modelId !== (reqBody.model || state.settings.defaultModelId);
+              const isFallback = modelId !== requestedModel;
               const statusType = isFallback ? 'fallback_success' : 'success';
+
+              attemptDetails.push({
+                requested_model: requestedModel,
+                actual_model: modelId,
+                key_index: keyItem.keyIndex,
+                attempt_number: totalAttempts,
+                fallback_model: 'none',
+                success: true,
+                timestamp: new Date().toISOString(),
+              });
+
+              this.lastRequestDebug = {
+                requestedModel,
+                selectedModel: modelId,
+                keyIndex: keyItem.keyIndex,
+                attempts: totalAttempts,
+                fallbackUsed: isFallback,
+                errorReason: null,
+                timestamp: new Date().toISOString(),
+                attemptDetails,
+              };
 
               const logEntry: RequestLog = {
                 id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 timestamp: new Date().toISOString(),
                 agentId: agentProfile.id,
                 agentName: agentProfile.name,
-                requestedModel: reqBody.model || state.settings.defaultModelId,
+                requestedModel,
                 actualModel: modelId,
                 provider,
                 keyIndex: keyItem.keyIndex,
@@ -325,7 +405,7 @@ export class RouterEngine {
                 hermesMeta: {
                   agentId: agentProfile.id,
                   agentName: agentProfile.name,
-                  requestedModel: reqBody.model || state.settings.defaultModelId,
+                  requestedModel,
                   actualModel: modelId,
                   provider,
                   keyIndex: keyItem.keyIndex,
@@ -348,15 +428,36 @@ export class RouterEngine {
             const latencyMs = Date.now() - startTime;
             store.markKeySuccess(keyItem.envVarName);
 
-            const isFallback = modelId !== (reqBody.model || state.settings.defaultModelId);
+            const isFallback = modelId !== requestedModel;
             const statusType = isFallback ? 'fallback_success' : 'success';
+
+            attemptDetails.push({
+              requested_model: requestedModel,
+              actual_model: modelId,
+              key_index: keyItem.keyIndex,
+              attempt_number: totalAttempts,
+              fallback_model: 'none',
+              success: true,
+              timestamp: new Date().toISOString(),
+            });
+
+            this.lastRequestDebug = {
+              requestedModel,
+              selectedModel: modelId,
+              keyIndex: keyItem.keyIndex,
+              attempts: totalAttempts,
+              fallbackUsed: isFallback,
+              errorReason: null,
+              timestamp: new Date().toISOString(),
+              attemptDetails,
+            };
 
             const logEntry: RequestLog = {
               id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
               timestamp: new Date().toISOString(),
               agentId: agentProfile.id,
               agentName: agentProfile.name,
-              requestedModel: reqBody.model || state.settings.defaultModelId,
+              requestedModel,
               actualModel: modelId,
               provider,
               keyIndex: keyItem.keyIndex,
@@ -402,7 +503,7 @@ export class RouterEngine {
               usage: result.usage,
               hermes_meta: {
                 provider,
-                requested_model: reqBody.model || state.settings.defaultModelId,
+                requested_model: requestedModel,
                 actual_model: modelId,
                 key_index: keyItem.keyIndex,
                 attempts: totalAttempts,
@@ -416,7 +517,7 @@ export class RouterEngine {
               hermesMeta: {
                 agentId: agentProfile.id,
                 agentName: agentProfile.name,
-                requestedModel: reqBody.model || state.settings.defaultModelId,
+                requestedModel,
                 actualModel: modelId,
                 provider,
                 keyIndex: keyItem.keyIndex,
@@ -430,7 +531,28 @@ export class RouterEngine {
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : String(err);
           lastError = errMsg;
-          console.warn(`[Hermes Router] Attempt ${totalAttempts} failed on key #${keyItem.keyIndex} (${modelId}): ${errMsg}`);
+
+          const nextFallback = modelCascade[modelCascade.indexOf(modelId) + 1] || 'none';
+
+          attemptDetails.push({
+            requested_model: requestedModel,
+            actual_model: modelId,
+            key_index: keyItem.keyIndex,
+            attempt_number: totalAttempts,
+            fallback_model: nextFallback,
+            error_reason: errMsg,
+            success: false,
+            timestamp: new Date().toISOString(),
+          });
+
+          console.warn(`[Hermes Router Attempt Log]`, {
+            requested_model: requestedModel,
+            actual_model: modelId,
+            key_index: keyItem.keyIndex,
+            attempt_number: totalAttempts,
+            fallback_model: nextFallback,
+            error_reason: errMsg,
+          });
 
           // Mark key cooldown on rate-limit, quota, auth, or connection error
           if (
@@ -452,13 +574,25 @@ export class RouterEngine {
 
     // All attempts exhausted
     const latencyMs = Date.now() - startTime;
+
+    this.lastRequestDebug = {
+      requestedModel,
+      selectedModel: 'none',
+      keyIndex: 0,
+      attempts: totalAttempts,
+      fallbackUsed: true,
+      errorReason: lastError || 'Exceeded retries across all available API keys and model fallbacks.',
+      timestamp: new Date().toISOString(),
+      attemptDetails,
+    };
+
     const logEntry: RequestLog = {
       id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       timestamp: new Date().toISOString(),
       agentId: agentProfile.id,
       agentName: agentProfile.name,
-      requestedModel: reqBody.model || state.settings.defaultModelId,
-      actualModel: reqBody.model || state.settings.defaultModelId,
+      requestedModel,
+      actualModel: requestedModel,
       provider: 'google',
       keyIndex: 0,
       status: 'error',
@@ -484,7 +618,7 @@ export class RouterEngine {
       hermesMeta: {
         agentId: agentProfile.id,
         agentName: agentProfile.name,
-        requestedModel: reqBody.model || state.settings.defaultModelId,
+        requestedModel,
         actualModel: 'none',
         provider: 'google',
         keyIndex: 0,

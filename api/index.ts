@@ -52,6 +52,30 @@ app.get('/api/v1/models', (req: Request, res: Response) => {
   });
 });
 
+// Runtime Models Info Debug Endpoint
+app.get('/api/v1/router/runtime-models', (req: Request, res: Response) => {
+  res.json(routerEngine.getRuntimeModelsInfo());
+});
+
+// Last Request Execution Debug Endpoint
+app.get(['/api/v1/router/last-request', '/api/v1/debug/last-request'], (req: Request, res: Response) => {
+  const debug = routerEngine.getLastRequestDebug();
+  if (!debug) {
+    res.json({
+      message: 'No request recorded yet since server boot.',
+      requestedModel: null,
+      selectedModel: null,
+      keyIndex: 0,
+      attempts: 0,
+      fallbackUsed: false,
+      errorReason: null,
+      attemptDetails: [],
+    });
+    return;
+  }
+  res.json(debug);
+});
+
 // Chat completions
 app.post('/api/v1/chat/completions', async (req: Request, res: Response) => {
   try {
