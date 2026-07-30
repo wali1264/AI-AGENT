@@ -114,7 +114,7 @@ void SendHeartbeatAndPollOrders()
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double margin = AccountInfoDouble(ACCOUNT_MARGIN);
-   double freeMargin = AccountInfoDouble(ACCOUNT_FREEMARGIN);
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    long accNum = AccountInfoInteger(ACCOUNT_LOGIN);
    string company = AccountInfoString(ACCOUNT_COMPANY);
    int openPosCount = PositionsTotal();
