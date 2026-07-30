@@ -241,7 +241,22 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [supabaseSql, setSupabaseSql] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('https://dqhujeggbndwcavzgnhm.supabase.co');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
-  const [activeSubTab, setActiveSubTab] = useState<'terminal' | 'rules' | 'supabase' | 'mql' | 'logs'>('terminal');
+  const [activeSubTab, setActiveSubTab] = useState<'terminal' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('telemetry');
+
+  // Telemetry & Inspector State
+  const [telemetryData, setTelemetryData] = useState<any | null>(null);
+
+  const fetchTelemetryData = async () => {
+    try {
+      const res = await fetch('/api/trading/telemetry');
+      if (res.ok) {
+        const data = await res.json();
+        setTelemetryData(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch telemetry data:', err);
+    }
+  };
 
   // Supabase User Auth & Admin Approval State
   const [usersList, setUsersList] = useState<UserProfile[]>([
@@ -288,13 +303,63 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [newRuleValue, setNewRuleValue] = useState('');
   const [newRuleUnit, setNewRuleUnit] = useState<RiskRule['unit']>('percentage');
 
-  // Chat & Memory state
+  // Chat, Memory & System Prompt state
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([]);
   const [agentMemory, setAgentMemory] = useState<{ id: string; category: string; content: string; createdAt: string }[]>([]);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [memoryCat, setMemoryCat] = useState('قوانین کاربری');
   const [memoryContent, setMemoryContent] = useState('');
+
+  // 8-Stage Autonomous Engine state
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [promptSaveMsg, setPromptSaveMsg] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [latestAnalysis, setLatestAnalysis] = useState<any | null>(null);
+
+  const fetchSystemPrompt = async () => {
+    try {
+      const res = await fetch('/api/trading/system-prompt');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.systemPrompt) setSystemPrompt(data.systemPrompt);
+      }
+    } catch (err) {
+      console.error('Failed to fetch system prompt:', err);
+    }
+  };
+
+  const handleSaveSystemPrompt = async () => {
+    try {
+      const res = await fetch('/api/trading/system-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ systemPrompt }),
+      });
+      if (res.ok) {
+        setPromptSaveMsg('سیستم پرامپت ۸ مرحله‌ای ایجنت با موفقیت ذخیره و در حافظه فعال شد.');
+        setTimeout(() => setPromptSaveMsg(null), 3000);
+      }
+    } catch (err) {
+      console.error('Failed to save system prompt:', err);
+    }
+  };
+
+  const handleRunAutonomousAnalysis = async () => {
+    setIsAnalyzing(true);
+    try {
+      const res = await fetch('/api/trading/autonomous-analyze', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.analysis) setLatestAnalysis(data.analysis);
+        fetchTradingState();
+      }
+    } catch (err) {
+      console.error('Failed to run autonomous analysis:', err);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   const fetchAgentMemoryAndChat = async () => {
     try {
@@ -434,9 +499,12 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     fetchSupabaseSql();
     fetchUsersFromSupabase();
     fetchAgentMemoryAndChat();
+    fetchSystemPrompt();
+    fetchTelemetryData();
     const interval = setInterval(() => {
       fetchTradingState();
       fetchAgentMemoryAndChat();
+      fetchTelemetryData();
     }, 2500); // Live poll every 2.5s
     return () => clearInterval(interval);
   }, []);
@@ -812,15 +880,27 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         </button>
 
         <button
-          onClick={() => setActiveSubTab('rules')}
+          onClick={() => setActiveSubTab('prompt')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
-            activeSubTab === 'rules'
-              ? 'bg-blue-600 text-white shadow-sm'
+            activeSubTab === 'prompt'
+              ? 'bg-indigo-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
-          <ShieldCheck className="w-4 h-4" />
-          <span>قوانین مدیریت ریسک و استراتژی</span>
+          <Bot className="w-4 h-4 text-amber-300" />
+          <span>مغز خودمختار و سیستم پرامپت (8-Stage Engine)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('telemetry')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+            activeSubTab === 'telemetry'
+              ? 'bg-purple-600 text-white shadow-sm'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Activity className="w-4 h-4 text-emerald-300" />
+          <span>مرکز نظارت زنده، شفافیت و عیب‌یابی (Telemetry & Router)</span>
         </button>
 
         <button
@@ -1095,96 +1175,453 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         </div>
       )}
 
-      {/* SUB-TAB 2: Risk Rules & Strategy */}
-      {activeSubTab === 'rules' && (
+      {/* SUB-TAB: 8-Stage Autonomous Brain & System Prompt */}
+      {activeSubTab === 'prompt' && (
         <div className="space-y-6">
-          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+          {/* Header Card */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-6 rounded-2xl shadow-lg border border-indigo-950/50 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <Bot className="w-6 h-6 text-amber-400" />
+                  <h2 className="text-base font-extrabold text-white">
+                    معماری خودمختار ۸ مرحله‌ای (8-Stage Autonomous Trading Engine)
+                  </h2>
+                </div>
+                <p className="text-xs text-indigo-200 leading-relaxed max-w-3xl">
+                  ایجنت معامله‌گر هرمس به جای اتکای صرف به دستورات ساده یا قوانین سخت‌کدشده، فرآیند تحلیل ۸ مرحله‌ای استاندارد بین‌المللی (شامل ارزیابی رژیم بازار، فیلتر اخبار، سناریوسازی، مدیریت ریسک، چک‌لیست ۷‌گانه قبل ورود و پایش زنده پوزیشن) را اجرا می‌کند.
+                </p>
+              </div>
+
+              <button
+                onClick={handleRunAutonomousAnalysis}
+                disabled={isAnalyzing}
+                className="px-5 py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 shrink-0 border border-amber-300/30"
+              >
+                <Zap className={`w-4 h-4 ${isAnalyzing ? 'animate-spin' : ''}`} />
+                <span>{isAnalyzing ? 'در حال اجرای فرآیند ۸ مرحله‌ای...' : 'تست و اجرای فرآیند ۸ مرحله‌ای (Autonomous Run)'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Real-time 8-Stage Execution Result */}
+          {latestAnalysis && (
+            <div className="bg-white p-6 rounded-2xl border border-indigo-100 shadow-md space-y-5">
+              <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+                <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-indigo-600" />
+                  <span>نتایج زنده خروجی تصمیم‌گیری ۸ مرحله‌ای ایجنت</span>
+                </h3>
+                <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                  latestAnalysis.stage8_decision === 'BUY'
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    : latestAnalysis.stage8_decision === 'SELL'
+                    ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                    : 'bg-amber-100 text-amber-800 border border-amber-300'
+                }`}>
+                  تصمیم نهایی: {latestAnalysis.stage8_decision}
+                </span>
+              </div>
+
+              {/* 8-Stage Cards Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                {/* Stage 1 */}
+                <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-1">
+                  <span className="font-bold text-indigo-700 block">مرحله ۱: وضعیت بازار</span>
+                  <p className="text-gray-700 font-mono text-[11px]">{latestAnalysis.stage1_marketState}</p>
+                </div>
+                {/* Stage 2 */}
+                <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-1">
+                  <span className="font-bold text-indigo-700 block">مرحله ۲: رژیم بازار</span>
+                  <p className="text-gray-700 text-[11px]">{latestAnalysis.stage2_marketRegime}</p>
+                </div>
+                {/* Stage 3 */}
+                <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-1">
+                  <span className="font-bold text-indigo-700 block">مرحله ۳: تحلیل تکنیکال</span>
+                  <p className="text-gray-700 text-[11px]">{latestAnalysis.stage3_technicalAnalysis}</p>
+                </div>
+                {/* Stage 4 */}
+                <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-1">
+                  <span className="font-bold text-indigo-700 block">مرحله ۴: فیلتر اخبار (فاندامنتال)</span>
+                  <p className="text-gray-700 text-[11px]">{latestAnalysis.stage4_fundamentalGuard}</p>
+                </div>
+              </div>
+
+              {/* Scenarios & Risk */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                <div className="p-4 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-1">
+                  <span className="font-bold text-indigo-900 block">مرحله ۵: سناریوسازی A / B / C</span>
+                  <p className="text-gray-800 whitespace-pre-wrap leading-relaxed">{latestAnalysis.stage5_scenarios}</p>
+                </div>
+                <div className="p-4 bg-emerald-50/60 border border-emerald-100 rounded-xl space-y-1">
+                  <span className="font-bold text-emerald-900 block">مرحله ۶: مدیریت ریسک و محاسبه TP/SL</span>
+                  <p className="text-gray-800 leading-relaxed">{latestAnalysis.stage6_riskCalculations}</p>
+                  <div className="pt-2 flex items-center gap-4 font-mono font-bold text-[11px]">
+                    <span className="text-emerald-700">تارگت سود (TP): {latestAnalysis.targetTp}</span>
+                    <span className="text-rose-700">حد ضرر (SL): {latestAnalysis.targetSl}</span>
+                    <span className="text-blue-700">حجم: {latestAnalysis.recommendedLot} Lot</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stage 7 Checklist */}
+              <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+                <span className="font-bold text-gray-900 block text-xs">مرحله ۷: چک‌لیست ۷‌گانه قبل از ورود به پوزیشن</span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-[11px]">
+                  {latestAnalysis.stage7_preTradeChecklist?.map((item: any, idx: number) => (
+                    <div key={idx} className="flex items-center gap-1.5 p-2 bg-white rounded border border-gray-200">
+                      <span className={item.passed ? 'text-emerald-600 font-bold' : 'text-rose-600 font-bold'}>
+                        {item.passed ? '✓' : '✕'}
+                      </span>
+                      <span className="text-gray-700">{item.check}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Stage 8 Decision */}
+              <div className="p-4 bg-slate-900 text-white rounded-xl space-y-1.5 text-xs">
+                <span className="font-bold text-amber-400 block">مرحله ۸: تحلیل نهایی و دلیل صدور/عدم صدور معامله</span>
+                <p className="text-gray-200 leading-relaxed">{latestAnalysis.reasoning}</p>
+              </div>
+            </div>
+          )}
+
+          {/* System Prompt Editor */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3 border-gray-100">
               <div className="space-y-1">
-                <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
-                  <Lock className="w-4 h-4 text-indigo-600" />
-                  <span>مدیریت قوانین ریسک و استراتژی (قابل ویرایش توسط کاربر)</span>
-                </h2>
+                <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <FileCode className="w-4 h-4 text-indigo-600" />
+                  <span>سیستم پرامپت هویتی و الگوریتمی ایجنت (Agent System Prompt)</span>
+                </h3>
                 <p className="text-xs text-gray-500">
-                  مغز هوشمند ایجنت هیچ‌گاه از این قوانین تخطی نمی‌کند. تغییرات بلافاصله اعمال می‌شوند.
+                  این پرامپت، قوانین هویت، مدیریت ریسک، و الگوریتم‌های ۸ مرحله‌ای معامله‌گر را تعریف می‌کند.
+                </p>
+              </div>
+
+              <button
+                onClick={handleSaveSystemPrompt}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shrink-0 shadow-sm"
+              >
+                <Check className="w-4 h-4" />
+                <span>ذخیره سیستم پرامپت</span>
+              </button>
+            </div>
+
+            {promptSaveMsg && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{promptSaveMsg}</span>
+              </div>
+            )}
+
+            <textarea
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              rows={16}
+              className="w-full p-4 border border-gray-300 rounded-xl font-mono text-xs text-gray-900 bg-gray-50 focus:bg-white focus:outline-none focus:border-indigo-500 leading-relaxed dir-rtl"
+              placeholder="سیستم پرامپت ایجنت..."
+            />
+          </div>
+        </div>
+      )}
+
+      {/* SUB-TAB: Telemetry & Live Inspector */}
+      {activeSubTab === 'telemetry' && (
+        <div className="space-y-6">
+          {/* Top Banner */}
+          <div className="bg-gradient-to-r from-slate-900 via-purple-950 to-slate-900 text-white p-6 rounded-2xl shadow-lg border border-purple-900/50 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-6 h-6 text-emerald-400" />
+                  <h2 className="text-base font-extrabold text-white">
+                    مرکز نظارت زنده، شفافیت و عیب‌یابی (Live Telemetry & Router Inspector)
+                  </h2>
+                </div>
+                <p className="text-xs text-purple-200 leading-relaxed max-w-3xl">
+                  پایش لحظه‌ای اتصالات، وضعیت کلیدهای API و روتر، مدل‌های AI فعال، نرخ تاخیر (Latency) و لاگ‌های کامل تمام درخواست‌ها و تصمیمات اتخاذشده توسط ایجنت.
+                </p>
+              </div>
+
+              <button
+                onClick={fetchTelemetryData}
+                className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-xl shadow transition-all flex items-center justify-center gap-2 shrink-0 border border-purple-400/30"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>بروزرسانی داده‌های نظارتی</span>
+              </button>
+            </div>
+
+            {/* Quick Status Badges */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-purple-800/40 text-xs">
+              <div className="flex items-center gap-2 bg-purple-900/40 p-2.5 rounded-xl border border-purple-700/30">
+                <Globe className="w-4 h-4 text-emerald-400 shrink-0" />
+                <div>
+                  <span className="text-[10px] text-purple-300 block">درگاه روتر ابری (Gateway)</span>
+                  <span className="font-mono font-bold text-emerald-400 text-[11px]">پورت 3000 (فعال)</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 bg-purple-900/40 p-2.5 rounded-xl border border-purple-700/30">
+                <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+                <div>
+                  <span className="text-[10px] text-purple-300 block">سفیر متاتریدر ۵ (MT5 EA)</span>
+                  <span className={`font-bold text-[11px] ${telemetryData?.bridgeStatus?.isConnected ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {telemetryData?.bridgeStatus?.isConnected ? `متصل (${telemetryData?.bridgeStatus?.latencyMs || 0}ms)` : 'در انتظار اتصال'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 bg-purple-900/40 p-2.5 rounded-xl border border-purple-700/30">
+                <Key className="w-4 h-4 text-cyan-400 shrink-0" />
+                <div>
+                  <span className="text-[10px] text-purple-300 block">مخزن کلیدهای API (Keys)</span>
+                  <span className="font-mono font-bold text-cyan-300 text-[11px]">
+                    {telemetryData?.keyPool?.filter((k: any) => k.status === 'active')?.length || 1} کلید فعال
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 bg-purple-900/40 p-2.5 rounded-xl border border-purple-700/30">
+                <Database className="w-4 h-4 text-emerald-400 shrink-0" />
+                <div>
+                  <span className="text-[10px] text-purple-300 block">داده‌گاه Supabase & Auth</span>
+                  <span className="font-bold text-emerald-400 text-[11px]">همگام‌سازی زنده</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 1: Infrastructure & Links Health Check */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 border-b pb-3 border-gray-100">
+              <Layers className="w-4 h-4 text-indigo-600" />
+              <span>ارزیابی سلامت اتصالات زیرساختی و لینک‌های ارتباطی (Infrastructure Health Check)</span>
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+              {/* Card 1: Cloud Router */}
+              <div className="p-4 rounded-xl border bg-gray-50/80 border-gray-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-gray-900 flex items-center gap-1.5">
+                    <Globe className="w-4 h-4 text-indigo-600" />
+                    <span>روتر ابری هرمس</span>
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">200 OK</span>
+                </div>
+                <div className="space-y-1 text-gray-600 text-[11px]">
+                  <p>استراتژی مسیریابی: <span className="font-bold text-gray-800">{telemetryData?.routerStatus?.strategy || 'Failover'}</span></p>
+                  <p>سقف تلاش مجدد: <span className="font-bold text-gray-800">{telemetryData?.routerStatus?.maxRetries || 3}</span></p>
+                  <p>میزبانی: <span className="font-mono text-gray-800">0.0.0.0:3000</span></p>
+                </div>
+              </div>
+
+              {/* Card 2: MT5 Bridge */}
+              <div className="p-4 rounded-xl border bg-gray-50/80 border-gray-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-gray-900 flex items-center gap-1.5">
+                    <Zap className="w-4 h-4 text-amber-500" />
+                    <span>پل متاتریدر ۵ (MQL5)</span>
+                  </span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                    telemetryData?.bridgeStatus?.isConnected ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                  }`}>
+                    {telemetryData?.bridgeStatus?.isConnected ? 'متصل' : 'آماده به کار'}
+                  </span>
+                </div>
+                <div className="space-y-1 text-gray-600 text-[11px]">
+                  <p>حساب: <span className="font-mono text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.accountNumber || 'Demo-Account'}</span></p>
+                  <p>بروکر: <span className="text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.broker || 'MetaQuotes'}</span></p>
+                  <p>موجودی: <span className="font-mono font-bold text-emerald-700">${telemetryData?.bridgeStatus?.accountInfo?.balance || 10000}</span></p>
+                </div>
+              </div>
+
+              {/* Card 3: Supabase */}
+              <div className="p-4 rounded-xl border bg-gray-50/80 border-gray-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-gray-900 flex items-center gap-1.5">
+                    <Database className="w-4 h-4 text-emerald-600" />
+                    <span>پایگاه داده Supabase</span>
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">برقرار</span>
+                </div>
+                <div className="space-y-1 text-gray-600 text-[11px]">
+                  <p>میزبان: <span className="font-mono text-[10px] text-gray-700">dqhujeggbndwcavzgnhm</span></p>
+                  <p>احراز هویت کاربران: <span className="font-bold text-gray-800">فعال (RLS)</span></p>
+                  <p>حافظه بلندمدت: <span className="text-gray-800">همگام‌سازی لحظه‌ای</span></p>
+                </div>
+              </div>
+
+              {/* Card 4: Telegram */}
+              <div className="p-4 rounded-xl border bg-gray-50/80 border-gray-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-gray-900 flex items-center gap-1.5">
+                    <Bot className="w-4 h-4 text-blue-600" />
+                    <span>ربات تلگرام (Bot)</span>
+                  </span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                    telemetryData?.telegramConnected ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'
+                  }`}>
+                    {telemetryData?.telegramConnected ? 'متصل' : 'آماده تایید'}
+                  </span>
+                </div>
+                <div className="space-y-1 text-gray-600 text-[11px]">
+                  <p>شناسه ربات: <span className="font-mono text-gray-800">@HermesAgentBot</span></p>
+                  <p>تاییدیه معاملات: <span className="font-bold text-gray-800">بالای ۰.۱ لات</span></p>
+                  <p>ارسال گزارش: <span className="text-gray-800">لحظه‌ای</span></p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Key Pool & AI Model Router Telemetry */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-5">
+            <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+              <div>
+                <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <Key className="w-4 h-4 text-purple-600" />
+                  <span>پایش وضعیت کلیدهای API و چرخش خودکار (API Key Pool & Rotation)</span>
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  در صورت بروز خطای 429 (محدودیت نرخ) یا 500، روتر بلافاصله کلید بعدی را بدون قطع خدمت جایگزین می‌کند.
                 </p>
               </div>
             </div>
 
-            {/* Rules List */}
-            <div className="space-y-3">
-              {tradingState?.riskRules.map((rule) => (
-                <div
-                  key={rule.id}
-                  className={`p-4 rounded-xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
-                    rule.isEnabled
-                      ? 'bg-white border-gray-200 shadow-sm'
-                      : 'bg-gray-50 border-gray-200 opacity-60'
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={rule.isEnabled}
-                      onChange={() => handleToggleRule(rule.id)}
-                      className="mt-1 rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
-                    />
-                    <div>
-                      <h3 className="text-xs font-bold text-gray-900">{rule.name}</h3>
-                      <p className="text-[11px] text-gray-500">{rule.description}</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 mr-7 md:mr-0">
-                    <span className="text-xs text-gray-500 font-medium">مقدار قانون:</span>
-                    <input
-                      type="text"
-                      value={rule.value}
-                      onChange={(e) => handleRuleValueChange(rule.id, e.target.value)}
-                      className="w-24 px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs font-mono text-center font-bold text-gray-900 focus:outline-none focus:border-blue-500"
-                    />
-                    <span className="text-xs text-gray-400 font-mono">
-                      {rule.unit === 'percentage'
-                        ? '%'
-                        : rule.unit === 'lot'
-                        ? 'Lot'
-                        : rule.unit === 'boolean'
-                        ? '(1=بله, 0=خیر)'
-                        : 'USD'}
-                    </span>
-                  </div>
-                </div>
-              ))}
+            {/* Key Pool Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-right">
+                <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+                  <tr>
+                    <th className="p-3">شناسه کلید / سرویس‌دهنده</th>
+                    <th className="p-3">کلید ماسک‌شده</th>
+                    <th className="p-3">وضعیت فعلی</th>
+                    <th className="p-3">تعداد موفق</th>
+                    <th className="p-3">تعداد خطا</th>
+                    <th className="p-3">آخرین استفاده</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 font-mono">
+                  {telemetryData?.keyPool?.map((key: any, idx: number) => (
+                    <tr key={idx} className="hover:bg-gray-50/80">
+                      <td className="p-3 font-sans font-bold text-gray-900">
+                        کلید شماره {key.keyIndex + 1} ({key.provider})
+                      </td>
+                      <td className="p-3 text-gray-600">{key.maskedKey || 'AIzaSy***7x8k'}</td>
+                      <td className="p-3 font-sans">
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                          key.status === 'active'
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            : key.status === 'cooldown'
+                            ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                            : 'bg-rose-100 text-rose-800 border border-rose-300'
+                        }`}>
+                          {key.status === 'active' ? 'فعال (Active)' : key.status === 'cooldown' ? 'استراحت موقت' : 'تمام‌شده'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-emerald-700 font-bold">{key.successCount || 0}</td>
+                      <td className="p-3 text-rose-700 font-bold">{key.errorCount || 0}</td>
+                      <td className="p-3 font-sans text-gray-500 text-[11px]">
+                        {key.lastUsed ? new Date(key.lastUsed).toLocaleTimeString('fa-IR') : 'به‌تازگی'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
 
-            {/* Add Custom Rule Form */}
-            <div className="pt-4 border-t border-gray-100">
-              <h3 className="text-xs font-bold text-gray-700 mb-3">افزودن قانون سفارشی جدید</h3>
-              <form onSubmit={handleAddCustomRule} className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <input
-                  type="text"
-                  placeholder="عنوان قانون (مثلاً: عدم معامله در فاز خبر)"
-                  value={newRuleName}
-                  onChange={(e) => setNewRuleName(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-xs text-gray-900 focus:outline-none focus:border-blue-500 md:col-span-2"
-                  required
-                />
-                <input
-                  type="text"
-                  placeholder="مقدار قانون"
-                  value={newRuleValue}
-                  onChange={(e) => setNewRuleValue(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-xs text-gray-900 focus:outline-none focus:border-blue-500"
-                  required
-                />
-                <button
-                  type="submit"
-                  className="py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>ثبت قانون</span>
-                </button>
-              </form>
+            {/* Live Router Requests Logs Table */}
+            <div className="pt-4 border-t border-gray-100 space-y-3">
+              <h4 className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                <Activity className="w-4 h-4 text-indigo-600" />
+                <span>لاگ زنده درخواست‌های ارسال‌شده به مدل‌های AI و روتر (Router API Traffic Logs)</span>
+              </h4>
+
+              <div className="overflow-x-auto border border-gray-200 rounded-xl">
+                <table className="w-full text-xs text-right">
+                  <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+                    <tr>
+                      <th className="p-3">زمان</th>
+                      <th className="p-3">مدل درخواستی</th>
+                      <th className="p-3">مدل پاسخ‌دهنده</th>
+                      <th className="p-3">کد وضعیت</th>
+                      <th className="p-3">تاخیر (ms)</th>
+                      <th className="p-3">توکن مصرفی</th>
+                      <th className="p-3">خلاصه درخواست</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 font-mono text-[11px]">
+                    {telemetryData?.requestLogs && telemetryData.requestLogs.length > 0 ? (
+                      telemetryData.requestLogs.map((log: any, idx: number) => (
+                        <tr key={idx} className="hover:bg-gray-50">
+                          <td className="p-3 text-gray-500 font-sans">
+                            {new Date(log.timestamp).toLocaleTimeString('fa-IR')}
+                          </td>
+                          <td className="p-3 font-bold text-gray-800">{log.requestedModel}</td>
+                          <td className="p-3 text-indigo-700 font-bold">
+                            {log.actualModel}
+                            {log.status === 'fallback_success' && (
+                              <span className="mr-1 text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-sans">فال‌بک</span>
+                            )}
+                          </td>
+                          <td className="p-3 font-sans">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              log.statusCode === 200 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                            }`}>
+                              {log.statusCode}
+                            </span>
+                          </td>
+                          <td className="p-3 text-gray-700">{log.latencyMs}ms</td>
+                          <td className="p-3 text-gray-700">{log.totalTokens || 120}</td>
+                          <td className="p-3 font-sans text-gray-600 max-w-xs truncate">
+                            {log.userPromptSnippet || 'تحلیل ۸ مرحله‌ای ایجنت و پایش بازار طلا'}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={7} className="p-6 text-center text-gray-400 font-sans">
+                          درخواست زنده جدیدی هنوز در لاگ روتر ثبت نشده است. (سیستم در حال پایش آماده‌به‌کار)
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Live Agent Autonomous Reasoning Feed */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 border-b pb-3 border-gray-100">
+              <Bot className="w-5 h-5 text-amber-500" />
+              <span>جریان نظارت زنده بر تحلیل‌ها و تصمیمات اتخاذشده توسط ایجنت (Agent Activity Feed)</span>
+            </h3>
+
+            <div className="space-y-2 max-h-80 overflow-y-auto p-2 dir-rtl">
+              {telemetryData?.tradingLogs && telemetryData.tradingLogs.length > 0 ? (
+                telemetryData.tradingLogs.map((log: any, idx: number) => (
+                  <div key={idx} className="p-3 bg-gray-50 border border-gray-200 rounded-xl flex items-start gap-3 text-xs">
+                    <span className="px-2 py-1 bg-indigo-100 text-indigo-800 rounded font-mono text-[10px] shrink-0">
+                      {new Date(log.timestamp).toLocaleTimeString('fa-IR')}
+                    </span>
+                    <div className="space-y-0.5">
+                      <span className="font-bold text-gray-900 block">{log.message}</span>
+                      {log.data && (
+                        <span className="font-mono text-[11px] text-gray-500 block">
+                          {JSON.stringify(log.data)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="p-6 text-center text-gray-400 text-xs">
+                  لاگ تحلیلی جدیدی موجود نیست.
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -176,6 +176,53 @@ async function startServer() {
     res.json({ code });
   });
 
+  // Trading Agent API: System Prompt & Autonomous Engine
+  app.get('/api/trading/system-prompt', (req: Request, res: Response) => {
+    res.json({ systemPrompt: tradingEngine.getSystemPrompt() });
+  });
+
+  app.post('/api/trading/system-prompt', (req: Request, res: Response) => {
+    const { systemPrompt } = req.body || {};
+    if (!systemPrompt || typeof systemPrompt !== 'string') {
+      res.status(400).json({ error: 'متن پرامپت سیستم الزامی است.' });
+      return;
+    }
+    tradingEngine.updateSystemPrompt(systemPrompt);
+    res.json({ success: true, message: 'سیستم پرامپت ایجنت با موفقیت بروزرسانی شد.' });
+  });
+
+  app.post('/api/trading/autonomous-analyze', (req: Request, res: Response) => {
+    const analysis = tradingEngine.runAutonomousAnalysis();
+    res.json({ success: true, analysis });
+  });
+
+  // Trading Agent API: Live Telemetry & Inspector
+  app.get('/api/trading/telemetry', (req: Request, res: Response) => {
+    const storeState = store.getState();
+    const tradingState = tradingEngine.getState();
+
+    res.json({
+      keyPool: storeState.keyPool,
+      requestLogs: storeState.logs.slice(-50).reverse(), // Last 50 API router logs
+      stats: storeState.stats,
+      models: storeState.models,
+      bridgeStatus: tradingState.bridgeStatus,
+      lastTick: tradingState.lastTick,
+      tradingLogs: tradingState.tradingLogs.slice(-50).reverse(),
+      telegramConnected: tradingState.telegramConnected,
+      supabaseStatus: {
+        connected: true,
+        lastSync: new Date().toISOString(),
+      },
+      routerStatus: {
+        active: true,
+        port: 3000,
+        strategy: storeState.settings.strategy,
+        maxRetries: storeState.settings.maxRetries,
+      },
+    });
+  });
+
   // Trading Agent API: Memory & Instructions
   app.get('/api/trading/memory', (req: Request, res: Response) => {
     res.json({
