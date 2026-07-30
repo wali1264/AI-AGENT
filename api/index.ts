@@ -373,4 +373,202 @@ app.delete('/api/admin/logs', (req: Request, res: Response) => {
   res.json({ success: true, message: 'تمام گزارش‌ها با موفقیت پاکسازی شدند.' });
 });
 
+// ==========================================
+// TRADING AGENT API ENDPOINTS (FOR VERCEL & SERVER)
+// ==========================================
+
+// Trading Agent API: Get State
+app.get('/api/trading/state', (req: Request, res: Response) => {
+  res.json(tradingEngine.getState());
+});
+
+// Trading Agent API: MT5 Heartbeat & Tick
+app.post('/api/trading/tick', (req: Request, res: Response) => {
+  const result = tradingEngine.processHeartbeat(req.body || {});
+  res.json({ status: 'ok', pendingOrders: result.pendingOrders });
+});
+
+// Trading Agent API: Create New Order
+app.post('/api/trading/order', (req: Request, res: Response) => {
+  const { symbol, type, lot, sl, tp, source } = req.body || {};
+  if (!symbol || !type || !lot) {
+    res.status(400).json({ error: 'اطلاعات سفارش کامل نیست (نماد، نوع معامله و حجم الزامی است).' });
+    return;
+  }
+  const result = tradingEngine.createOrder({ symbol, type, lot, sl, tp, source: source || 'user_manual' });
+  if (!result.success) {
+    res.status(400).json({ error: result.error });
+    return;
+  }
+  res.json({ success: true, order: result.order });
+});
+
+// Trading Agent API: Handle Order Result from EA
+app.post('/api/trading/order-result', (req: Request, res: Response) => {
+  const { orderId, status, executionPrice, error } = req.body || {};
+  if (!orderId || !status) {
+    res.status(400).json({ error: 'شناسه سفارش و وضعیت الزامی است.' });
+    return;
+  }
+  tradingEngine.handleOrderResult({ orderId, status, executionPrice, error });
+  res.json({ success: true });
+});
+
+// Trading Agent API: Get EA Code
+app.get('/api/trading/ea-code', (req: Request, res: Response) => {
+  const origin = `${req.protocol}://${req.get('host')}`;
+  const code = tradingEngine.generateMql5Code(origin);
+  res.json({ code });
+});
+
+// Trading Agent API: System Prompt & Autonomous Engine
+app.get('/api/trading/system-prompt', (req: Request, res: Response) => {
+  res.json({ systemPrompt: tradingEngine.getSystemPrompt() });
+});
+
+app.post('/api/trading/system-prompt', (req: Request, res: Response) => {
+  const { systemPrompt } = req.body || {};
+  if (!systemPrompt || typeof systemPrompt !== 'string') {
+    res.status(400).json({ error: 'متن پرامپت سیستم الزامی است.' });
+    return;
+  }
+  tradingEngine.updateSystemPrompt(systemPrompt);
+  res.json({ success: true, message: 'سیستم پرامپت ایجنت با موفقیت بروزرسانی شد.' });
+});
+
+app.post('/api/trading/autonomous-analyze', (req: Request, res: Response) => {
+  const analysis = tradingEngine.runAutonomousAnalysis();
+  res.json({ success: true, analysis });
+});
+
+// Trading Agent API: Live Telemetry & Inspector
+app.get('/api/trading/telemetry', (req: Request, res: Response) => {
+  const storeState = store.getState();
+  const tradingState = tradingEngine.getState();
+
+  res.json({
+    keyPool: storeState.keyPool,
+    requestLogs: storeState.logs.slice(-50).reverse(), // Last 50 API router logs
+    stats: storeState.stats,
+    models: storeState.models,
+    bridgeStatus: tradingState.bridgeStatus,
+    lastTick: tradingState.lastTick,
+    tradingLogs: tradingState.tradingLogs.slice(-50).reverse(),
+    telegramConnected: tradingState.telegramConnected,
+    supabaseStatus: {
+      connected: true,
+      lastSync: new Date().toISOString(),
+    },
+    routerStatus: {
+      active: true,
+      port: 3000,
+      strategy: storeState.settings.strategy,
+      maxRetries: storeState.settings.maxRetries,
+    },
+  });
+});
+
+// Trading Agent API: Memory & Instructions
+app.get('/api/trading/memory', (req: Request, res: Response) => {
+  res.json({
+    memory: tradingEngine.getMemory(),
+    messages: tradingEngine.getChatMessages(),
+  });
+});
+
+app.post('/api/trading/memory', async (req: Request, res: Response) => {
+  const { category, content } = req.body || {};
+  if (!content) {
+    res.status(400).json({ error: 'متن دستورالعمل یا آموزه الزامی است.' });
+    return;
+  }
+  const note = await tradingEngine.addMemoryNote(category || 'دستور کاربری', content);
+  res.json({ success: true, note });
+});
+
+app.delete('/api/trading/memory/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  await tradingEngine.deleteMemoryNote(id);
+  res.json({ success: true });
+});
+
+// Trading Agent API: Interactive Chat
+app.post('/api/trading/chat', async (req: Request, res: Response) => {
+  const { text } = req.body || {};
+  if (!text) {
+    res.status(400).json({ error: 'متن پیام الزامی است.' });
+    return;
+  }
+  const result = await tradingEngine.processAgentChat(text);
+  res.json({ success: true, ...result });
+});
+
+// Trading Agent API: Get Supabase SQL & Config
+app.get('/api/trading/supabase-sql', (req: Request, res: Response) => {
+  const sql = `-- Complete Supabase Schema for Hermes Trading Agent
+-- Execute this SQL in Supabase Dashboard -> SQL Editor
+
+CREATE TABLE IF NOT EXISTS public.user_profiles (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  full_name TEXT,
+  role TEXT DEFAULT 'user',
+  is_approved BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.risk_rules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  is_enabled BOOLEAN DEFAULT TRUE,
+  value NUMERIC,
+  unit TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.trade_orders (
+  id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  type TEXT NOT NULL,
+  lot NUMERIC NOT NULL,
+  sl NUMERIC,
+  tp NUMERIC,
+  status TEXT DEFAULT 'PENDING',
+  execution_price NUMERIC,
+  source TEXT DEFAULT 'ai_agent',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.trading_logs (
+  id TEXT PRIMARY KEY,
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  type TEXT,
+  message TEXT,
+  data JSONB
+);
+
+CREATE TABLE IF NOT EXISTS public.agent_memory (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.chat_messages (
+  id TEXT PRIMARY KEY,
+  sender TEXT NOT NULL,
+  text TEXT NOT NULL,
+  timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+`;
+
+  res.json({
+    url: process.env.SUPABASE_URL || 'https://dqhujeggbndwcavzgnhm.supabase.co',
+    anonKey: process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxaHVqZWdnYm5kd2NhdnpnbmhtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUzNzM2MDcsImV4cCI6MjEwMDk0OTYwN30.ixW2V-WWQnOB8q4REtuF1KK3-bULS7fWw5NIg43EpV4',
+    sql,
+  });
+});
+
 export default app;

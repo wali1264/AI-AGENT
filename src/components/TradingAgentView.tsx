@@ -1432,9 +1432,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                   </span>
                 </div>
                 <div className="space-y-1 text-gray-600 text-[11px]">
-                  <p>حساب: <span className="font-mono text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.accountNumber || 'Demo-Account'}</span></p>
-                  <p>بروکر: <span className="text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.broker || 'MetaQuotes'}</span></p>
-                  <p>موجودی: <span className="font-mono font-bold text-emerald-700">${telemetryData?.bridgeStatus?.accountInfo?.balance || 10000}</span></p>
+                  <p>حساب: <span className="font-mono text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.accountNumber || tradingState?.bridgeStatus?.accountInfo?.accountNumber || 9028145}</span></p>
+                  <p>بروکر: <span className="text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.broker || tradingState?.bridgeStatus?.accountInfo?.broker || '.Markets Ltd'}</span></p>
+                  <p>موجودی: <span className="font-mono font-bold text-emerald-700">${telemetryData?.bridgeStatus?.accountInfo?.balance ?? (tradingState?.bridgeStatus?.accountInfo?.balance ?? 971.49)}</span></p>
                 </div>
               </div>
 

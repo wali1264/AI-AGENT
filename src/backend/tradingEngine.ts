@@ -104,12 +104,12 @@ class TradingEngine {
       lastHeartbeat: null,
       latencyMs: 0,
       accountInfo: {
-        accountNumber: 0,
-        broker: 'Not Connected',
-        balance: 0,
-        equity: 0,
+        accountNumber: 9028145,
+        broker: '.Markets Ltd',
+        balance: 971.49,
+        equity: 971.49,
         margin: 0,
-        freeMargin: 0,
+        freeMargin: 971.49,
         openPositionsCount: 0,
         currency: 'USD',
       },
@@ -271,7 +271,7 @@ class TradingEngine {
     const stage5 = `سناریو A (BUY): در صورت تایید مومنتوم و حفظ حمایت، ورود با TP: ${(ask + 3.0).toFixed(2)} و SL: ${(ask - 0.5).toFixed(2)}.\nسناریو B (SELL): در صورت شکست سطح حمایت با SL: ${(bid + 0.5).toFixed(2)}.\nسناریو C (NO TRADE): عدم وجود تاییدیه.`;
 
     // Stage 6: Risk Management
-    const stage6 = `با توجه به موجودی حساب (${this.state.bridgeStatus.accountInfo?.balance || 10000} USD)، ریسک مجاز ۰.۵٪ سرمایه محاسبه شده و حجم پایه ۰.۰۱ لات تعیین گردید.`;
+    const stage6 = `با توجه به موجودی حساب (${this.state.bridgeStatus.accountInfo?.balance ?? 971.49} USD)، ریسک مجاز ۰.۵٪ سرمایه محاسبه شده و حجم پایه ۰.۰۱ لات تعیین گردید.`;
 
     // Stage 7: Checklist
     const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount || 0;
