@@ -454,6 +454,34 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     }
   };
 
+  // Handle Quick Close All Positions
+  const handleQuickCloseAll = async () => {
+    setOrderError(null);
+    setOrderSuccess(null);
+    try {
+      const res = await fetch('/api/trading/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: symbol || 'XAUUSD',
+          type: 'CLOSE_ALL',
+          lot: 0.01,
+          source: 'user_manual',
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setOrderError(data.error || 'خطا در ثبت دستور بستن پوزیشن');
+      } else {
+        setOrderSuccess('دستور بستن تمامی پوزیشن‌ها با موفقیت صادر و به MT5 ارسال شد.');
+        fetchTradingState();
+      }
+    } catch (err: unknown) {
+      setOrderError(err instanceof Error ? err.message : 'خطا در برقراری ارتباط با سرور');
+    }
+  };
+
   // Simulate Tick for testing when EA is offline
   const handleSimulateTick = async () => {
     try {
@@ -647,9 +675,19 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
             <span className="text-[11px] font-medium">پوزیشن‌های باز</span>
             <Sliders className="w-4 h-4 text-purple-600" />
           </div>
-          <p className="text-base font-bold text-gray-900 font-mono">
-            {status?.accountInfo?.openPositionsCount ?? 0} پوزیشن
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-base font-bold text-gray-900 font-mono">
+              {status?.accountInfo?.openPositionsCount ?? 0} پوزیشن
+            </p>
+            <button
+              onClick={handleQuickCloseAll}
+              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold rounded-lg flex items-center gap-1 transition-colors shadow-sm"
+              title="ارسال سریع دستور بستن پوزیشن به متاتریدر"
+            >
+              <XCircle className="w-3.5 h-3.5" />
+              <span>بستن پوزیشن‌ها (Close)</span>
+            </button>
+          </div>
         </div>
 
         {/* Live Symbol Ask */}
