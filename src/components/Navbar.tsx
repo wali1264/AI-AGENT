@@ -1,21 +1,26 @@
 import React from 'react';
-import { Cpu, ShieldCheck, ShieldAlert, Key, RefreshCw, Lock } from 'lucide-react';
+import { Cpu, ShieldCheck, ShieldAlert, Key, RefreshCw, Lock, LogOut, UserCheck } from 'lucide-react';
 import { ServerState } from '../types';
 
 interface NavbarProps {
   state: ServerState | null;
   onRefresh: () => void;
   isLoading: boolean;
-  onOpenLogin: () => void;
-  isAuthenticated: boolean;
+  userProfile?: {
+    email: string;
+    full_name: string;
+    role: string;
+    is_approved: boolean;
+  } | null;
+  onLogout: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   state,
   onRefresh,
   isLoading,
-  onOpenLogin,
-  isAuthenticated,
+  userProfile,
+  onLogout,
 }) => {
   const activeKeys = state?.stats.activeKeysCount ?? 0;
   const isHealthy = activeKeys > 0;
@@ -79,18 +84,24 @@ export const Navbar: React.FC<NavbarProps> = ({
           <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-blue-600' : ''}`} />
         </button>
 
-        {/* Auth Lock Button */}
-        <button
-          onClick={onOpenLogin}
-          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-            isAuthenticated
-              ? 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
-              : 'bg-gray-900 border-gray-900 text-white hover:bg-gray-800'
-          }`}
-        >
-          <Lock className="w-3.5 h-3.5" />
-          <span>{isAuthenticated ? 'احراز هویت شده' : 'ورود مدیریت'}</span>
-        </button>
+        {/* User Profile Info & Logout */}
+        {userProfile && (
+          <div className="flex items-center gap-2 pr-2 border-r border-gray-200">
+            <div className="hidden lg:flex flex-col text-right">
+              <span className="text-xs font-bold text-gray-900">{userProfile.full_name}</span>
+              <span className="text-[10px] font-mono text-gray-500">{userProfile.email}</span>
+            </div>
+
+            <button
+              onClick={onLogout}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 transition-colors"
+              title="خروج امن از حساب کاربری Supabase"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>خروج</span>
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

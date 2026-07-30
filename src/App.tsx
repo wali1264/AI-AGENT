@@ -10,6 +10,8 @@ import { PlaygroundView } from './components/PlaygroundView';
 import { DocsView } from './components/DocsView';
 import { TradingAgentView } from './components/TradingAgentView';
 import { AdminLoginModal } from './components/AdminLoginModal';
+import { AuthGateway, UserAuthStatus } from './components/AuthGateway';
+import { supabase } from './lib/supabaseClient';
 import { AgentProfile, ModelConfig, RouterSettings, ServerState } from './types';
 
 export default function App() {
@@ -18,6 +20,18 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [adminToken, setAdminToken] = useState<string | null>(null);
+
+  // Supabase Auth State
+  const [userStatus, setUserStatus] = useState<UserAuthStatus>({
+    session: null,
+    profile: null,
+    isLoading: true,
+  });
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUserStatus({ session: null, profile: null, isLoading: false });
+  };
 
   const fetchState = useCallback(async () => {
     setIsLoading(true);
@@ -105,81 +119,87 @@ export default function App() {
   };
 
   return (
-    <div dir="rtl" className="min-h-screen bg-[#f8f9fa] font-sans text-[#1a1a1a] flex flex-col selection:bg-blue-600 selection:text-white">
-      <Navbar
-        state={state}
-        onRefresh={fetchState}
-        isLoading={isLoading}
-        onOpenLogin={() => setIsLoginOpen(true)}
-        isAuthenticated={Boolean(adminToken)}
-      />
-
-      <div className="flex-1 flex overflow-hidden">
-        <Sidebar
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          logsCount={state?.logs.length || 0}
+    <AuthGateway
+      userStatus={userStatus}
+      onAuthChange={setUserStatus}
+      onLogout={handleLogout}
+    >
+      <div dir="rtl" className="min-h-screen bg-[#f8f9fa] font-sans text-[#1a1a1a] flex flex-col selection:bg-blue-600 selection:text-white">
+        <Navbar
+          state={state}
+          onRefresh={fetchState}
+          isLoading={isLoading}
+          userProfile={userStatus.profile}
+          onLogout={handleLogout}
         />
 
-        <main className="flex-1 overflow-y-auto bg-[#f8f9fa] p-3 sm:p-8">
-          <div className="max-w-7xl mx-auto">
-            {activeTab === 'dashboard' && (
-              <DashboardView
-                state={state}
-                onNavigate={(tab) => setActiveTab(tab)}
-              />
-            )}
+        <div className="flex-1 flex overflow-hidden">
+          <Sidebar
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            logsCount={state?.logs.length || 0}
+          />
 
-            {activeTab === 'trading' && (
-              <TradingAgentView adminToken={adminToken} />
-            )}
+          <main className="flex-1 overflow-y-auto bg-[#f8f9fa] p-3 sm:p-8">
+            <div className="max-w-7xl mx-auto">
+              {activeTab === 'dashboard' && (
+                <DashboardView
+                  state={state}
+                  onNavigate={(tab) => setActiveTab(tab)}
+                />
+              )}
 
-            {activeTab === 'models' && (
-              <ModelManagementView
-                state={state}
-                onSaveModels={handleSaveModels}
-              />
-            )}
+              {activeTab === 'trading' && (
+                <TradingAgentView adminToken={adminToken} />
+              )}
 
-            {activeTab === 'router' && (
-              <RouterSettingsView
-                state={state}
-                onSaveSettings={handleSaveSettings}
-                onRefresh={fetchState}
-              />
-            )}
+              {activeTab === 'models' && (
+                <ModelManagementView
+                  state={state}
+                  onSaveModels={handleSaveModels}
+                />
+              )}
 
-            {activeTab === 'agents' && (
-              <AgentManagementView
-                state={state}
-                onSaveAgents={handleSaveAgents}
-              />
-            )}
+              {activeTab === 'router' && (
+                <RouterSettingsView
+                  state={state}
+                  onSaveSettings={handleSaveSettings}
+                  onRefresh={fetchState}
+                />
+              )}
 
-            {activeTab === 'logs' && (
-              <LogsView
-                state={state}
-                onClearLogs={handleClearLogs}
-              />
-            )}
+              {activeTab === 'agents' && (
+                <AgentManagementView
+                  state={state}
+                  onSaveAgents={handleSaveAgents}
+                />
+              )}
 
-            {activeTab === 'playground' && (
-              <PlaygroundView
-                state={state}
-                onRefreshState={fetchState}
-              />
-            )}
+              {activeTab === 'logs' && (
+                <LogsView
+                  state={state}
+                  onClearLogs={handleClearLogs}
+                />
+              )}
 
-            {activeTab === 'docs' && <DocsView />}
-          </div>
-        </main>
+              {activeTab === 'playground' && (
+                <PlaygroundView
+                  state={state}
+                  onRefreshState={fetchState}
+                />
+              )}
+
+              {activeTab === 'docs' && <DocsView />}
+            </div>
+          </main>
+        </div>
+
+        <AdminLoginModal
+          isOpen={isLoginOpen}
+          onClose={() => setIsLoginOpen(false)}
+          onLoginSuccess={(token) => setAdminToken(token)}
+        />
       </div>
-
-      <AdminLoginModal
-        isOpen={isLoginOpen}
-        onClose={() => setIsLoginOpen(false)}
-        onLoginSuccess={(token) => setAdminToken(token)}
-      />
-    </div>
+    </AuthGateway>
   );
 }
