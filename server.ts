@@ -6,8 +6,15 @@ import { routerEngine } from './src/backend/routerEngine.js';
 import { store } from './src/backend/store.js';
 import { tradingEngine } from './src/backend/tradingEngine.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+let currentFilePath = process.cwd();
+try {
+  if (typeof import.meta !== 'undefined' && import.meta.url) {
+    currentFilePath = fileURLToPath(import.meta.url);
+  }
+} catch {
+  // Fallback
+}
+const __dirname = path.dirname(currentFilePath);
 
 async function startServer() {
   const app = express();
@@ -194,6 +201,15 @@ async function startServer() {
   app.post('/api/trading/autonomous-analyze', (req: Request, res: Response) => {
     const analysis = tradingEngine.runAutonomousAnalysis();
     res.json({ success: true, analysis });
+  });
+
+  app.get('/api/trading/autonomous', (req: Request, res: Response) => {
+    res.json(tradingEngine.getAutonomousTradingConfig());
+  });
+
+  app.post('/api/trading/autonomous', (req: Request, res: Response) => {
+    const updated = tradingEngine.setAutonomousTradingConfig(req.body || {});
+    res.json({ success: true, config: updated });
   });
 
   // Trading Agent API: Live Telemetry & Inspector
