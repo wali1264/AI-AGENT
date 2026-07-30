@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import { routerEngine } from '../src/backend/routerEngine.js';
 import { store } from '../src/backend/store.js';
+import { tradingEngine } from '../src/backend/tradingEngine.js';
 
 const app = express();
 
@@ -27,6 +28,181 @@ app.get('/api/health', (req: Request, res: Response) => {
     activeKeys: state.stats.activeKeysCount,
     activeModels: state.stats.activeModelsCount,
     timestamp: new Date().toISOString(),
+  });
+});
+
+// ==========================================
+// Trading Agent & MetaTrader 5 Ambassador API
+// ==========================================
+
+// EA Heartbeat & Tick endpoint (MT5 Ambassador posts ticks and receives pending orders)
+app.post('/api/trading/tick', (req: Request, res: Response) => {
+  const result = tradingEngine.processHeartbeat(req.body);
+  res.json(result);
+});
+
+// Order Execution Result endpoint (MT5 Ambassador posts order fill status)
+app.post('/api/trading/order-result', (req: Request, res: Response) => {
+  const { orderId, status, executionPrice, error } = req.body;
+  const success = tradingEngine.handleOrderResult({ orderId, status, executionPrice, error });
+  res.json({ success });
+});
+
+// Get Full Trading State (UI Dashboard polls this)
+app.get('/api/trading/state', (req: Request, res: Response) => {
+  res.json(tradingEngine.getState());
+});
+
+// Create Order (Dispatch manual trade or AI agent trade)
+app.post('/api/trading/order', (req: Request, res: Response) => {
+  const { symbol, type, lot, sl, tp, source } = req.body;
+  const result = tradingEngine.createOrder({
+    symbol: symbol || 'XAUUSD',
+    type: type || 'BUY',
+    lot: Number(lot) || 0.01,
+    sl: sl ? Number(sl) : undefined,
+    tp: tp ? Number(tp) : undefined,
+    source: source || 'user_manual',
+  });
+  if (!result.success) {
+    res.status(400).json(result);
+  } else {
+    res.json(result);
+  }
+});
+
+// Update Risk Rules (User updates strategy parameters)
+app.post('/api/trading/rules', (req: Request, res: Response) => {
+  const { rules } = req.body;
+  if (Array.isArray(rules)) {
+    tradingEngine.updateRiskRules(rules);
+    res.json({ success: true, message: 'قوانین ریسک با موفقیت به‌روزرسانی شدند.' });
+  } else {
+    res.status(400).json({ error: 'آرایه قوانین نامعتبر است.' });
+  }
+});
+
+// Download/Get MQL5 Ambassador Code
+app.get('/api/trading/ea-code', (req: Request, res: Response) => {
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+  const serverUrl = `${protocol}://${host}`;
+  const code = tradingEngine.generateMql5Code(serverUrl);
+  res.json({ serverUrl, code });
+});
+
+// Get Supabase Setup Query & Status
+app.get('/api/trading/supabase-sql', (req: Request, res: Response) => {
+  const sql = `-- =====================================================================
+-- HERMES TRADING AGENT - SUPABASE FULL DATABASE SCHEMA & RLS POLICIES
+-- Project URL: https://dqhujeggbndwcavzgnhm.supabase.co
+-- =====================================================================
+
+-- 1. Create User Profiles Table (Integrated with Supabase Auth)
+CREATE TABLE IF NOT EXISTS public.user_profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email TEXT UNIQUE NOT NULL,
+  full_name TEXT,
+  role TEXT DEFAULT 'user',
+  is_approved BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Create Risk Rules Table (Strategy parameters & limits)
+CREATE TABLE IF NOT EXISTS public.risk_rules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  is_enabled BOOLEAN DEFAULT TRUE,
+  value NUMERIC NOT NULL,
+  unit TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Create Trade Orders Table (Pending and executed order history)
+CREATE TABLE IF NOT EXISTS public.trade_orders (
+  id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  type TEXT NOT NULL,
+  lot NUMERIC NOT NULL,
+  sl NUMERIC,
+  tp NUMERIC,
+  status TEXT NOT NULL,
+  source TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  executed_at TIMESTAMPTZ,
+  execution_price NUMERIC,
+  error TEXT
+);
+
+-- 4. Create Trading Logs Table (AI reflections, signals, and agent events)
+CREATE TABLE IF NOT EXISTS public.trading_logs (
+  id TEXT PRIMARY KEY,
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  type TEXT NOT NULL,
+  message TEXT NOT NULL,
+  metadata JSONB
+);
+
+-- 5. Seed Default Risk Rules
+INSERT INTO public.risk_rules (id, name, description, is_enabled, value, unit)
+VALUES
+  ('max_risk_per_trade', 'حداکثر ریسک هر معامله', 'درصد مجاز ریسک از موجودی (Equity) برای هر پوزیشن جدید', true, 1.0, 'percentage'),
+  ('max_daily_drawdown', 'حداکثر افت روزانه حساب (Daily Loss)', 'سقف زیان روزانه متوالی قبل از توقف خودکار ربات', true, 3.0, 'percentage'),
+  ('max_lot_size', 'حداکثر حجم معامله (Max Lot)', 'سقف مجاز لات برای هر سفارش ارسالی', true, 0.1, 'lot'),
+  ('max_open_positions', 'حداکثر پوزیشن‌های همزمان باز', 'تعداد مجاز معاملات باز همزمان روی متاتریدر', true, 2.0, 'usd'),
+  ('require_sl_tp', 'الزامی بودن حد ضرر (Stop-Loss)', 'جلوگیری از ارسال هرگونه معامله بدون حد ضرر مشخص', true, 1.0, 'boolean')
+ON CONFLICT (id) DO NOTHING;
+
+-- 6. Trigger to automatically create a user_profiles record when a new user registers in Supabase Auth
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.user_profiles (id, email, full_name, role, is_approved)
+  VALUES (
+    NEW.id,
+    NEW.email,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', SPLIT_PART(NEW.email, '@', 1)),
+    'user',
+    FALSE
+  )
+  ON CONFLICT (id) DO UPDATE
+  SET email = EXCLUDED.email, updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- 7. Enable Row Level Security (RLS) on all tables
+ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.risk_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trade_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trading_logs ENABLE ROW LEVEL SECURITY;
+
+-- 8. Define RLS Access Policies
+CREATE POLICY "Allow public read for user_profiles" ON public.user_profiles FOR SELECT USING (true);
+CREATE POLICY "Allow anon and auth insert/update user_profiles" ON public.user_profiles FOR ALL USING (true);
+
+CREATE POLICY "Allow public read for risk_rules" ON public.risk_rules FOR SELECT USING (true);
+CREATE POLICY "Allow full access for risk_rules" ON public.risk_rules FOR ALL USING (true);
+
+CREATE POLICY "Allow public read for trade_orders" ON public.trade_orders FOR SELECT USING (true);
+CREATE POLICY "Allow full access for trade_orders" ON public.trade_orders FOR ALL USING (true);
+
+CREATE POLICY "Allow public read for trading_logs" ON public.trading_logs FOR SELECT USING (true);
+CREATE POLICY "Allow full access for trading_logs" ON public.trading_logs FOR ALL USING (true);
+`;
+
+  res.json({
+    url: process.env.SUPABASE_URL || 'https://dqhujeggbndwcavzgnhm.supabase.co',
+    anonKey: process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxaHVqZWdnYm5kd2NhdnpnbmhtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUzNzM2MDcsImV4cCI6MjEwMDk0OTYwN30.ixW2V-WWQnOB8q4REtuF1KK3-bULS7fWw5NIg43EpV4',
+    sql,
   });
 });
 

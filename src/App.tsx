@@ -8,6 +8,7 @@ import { AgentManagementView } from './components/AgentManagementView';
 import { LogsView } from './components/LogsView';
 import { PlaygroundView } from './components/PlaygroundView';
 import { DocsView } from './components/DocsView';
+import { TradingAgentView } from './components/TradingAgentView';
 import { AdminLoginModal } from './components/AdminLoginModal';
 import { AgentProfile, ModelConfig, RouterSettings, ServerState } from './types';
 
@@ -127,6 +128,10 @@ export default function App() {
                 state={state}
                 onNavigate={(tab) => setActiveTab(tab)}
               />
+            )}
+
+            {activeTab === 'trading' && (
+              <TradingAgentView adminToken={adminToken} />
             )}
 
             {activeTab === 'models' && (

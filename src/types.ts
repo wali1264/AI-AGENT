@@ -93,6 +93,74 @@ export interface ServerState {
   logs: RequestLog[];
   stats: SystemStats;
   authRequired: boolean;
+  tradingState?: TradingState;
+}
+
+export interface TradeOrder {
+  id: string;
+  symbol: string;
+  type: 'BUY' | 'SELL' | 'CLOSE' | 'CLOSE_ALL';
+  lot: number;
+  sl?: number;
+  tp?: number;
+  status: 'pending' | 'executed' | 'failed' | 'cancelled';
+  createdAt: string;
+  executedAt?: string;
+  executionPrice?: number;
+  error?: string;
+  source: 'ai_agent' | 'user_manual' | 'telegram';
+}
+
+export interface TickData {
+  symbol: string;
+  ask: number;
+  bid: number;
+  spread: number;
+  timestamp: string;
+}
+
+export interface EABridgeStatus {
+  isConnected: boolean;
+  lastHeartbeat: string | null;
+  latencyMs: number;
+  accountInfo?: {
+    accountNumber?: number;
+    broker?: string;
+    balance?: number;
+    equity?: number;
+    margin?: number;
+    freeMargin?: number;
+    openPositionsCount?: number;
+    currency?: string;
+  };
+}
+
+export interface RiskRule {
+  id: string;
+  name: string;
+  description: string;
+  isEnabled: boolean;
+  value: number | string;
+  unit: 'percentage' | 'usd' | 'lot' | 'boolean' | 'hours';
+}
+
+export interface AgentTradingLog {
+  id: string;
+  timestamp: string;
+  type: 'tick_received' | 'signal_generated' | 'rule_check' | 'order_dispatched' | 'order_result' | 'error' | 'ai_analysis';
+  message: string;
+  data?: any;
+}
+
+export interface TradingState {
+  bridgeStatus: EABridgeStatus;
+  lastTick: TickData | null;
+  pendingOrders: TradeOrder[];
+  orderHistory: TradeOrder[];
+  riskRules: RiskRule[];
+  tradingLogs: AgentTradingLog[];
+  isAgentActive: boolean;
+  telegramConnected: boolean;
 }
 
 export interface OpenAiToolCall {

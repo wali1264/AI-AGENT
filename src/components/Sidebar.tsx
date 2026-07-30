@@ -7,10 +7,12 @@ import {
   FileText,
   Terminal,
   BookOpen,
+  Bot,
 } from 'lucide-react';
 
 export type TabType =
   | 'dashboard'
+  | 'trading'
   | 'models'
   | 'router'
   | 'agents'
@@ -34,6 +36,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'dashboard',
       label: 'داشبورد اصلی',
       icon: LayoutDashboard,
+    },
+    {
+      id: 'trading',
+      label: 'سفیر MetaTrader (Agent App)',
+      icon: Bot,
+      badge: 'جدید',
     },
     {
       id: 'models',

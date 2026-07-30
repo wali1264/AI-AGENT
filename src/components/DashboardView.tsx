@@ -11,10 +11,11 @@ import {
   Database,
 } from 'lucide-react';
 import { ServerState, RequestLog } from '../types';
+import { TabType } from './Sidebar';
 
 interface DashboardViewProps {
   state: ServerState | null;
-  onNavigate: (tab: 'models' | 'router' | 'logs' | 'playground') => void;
+  onNavigate: (tab: TabType) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ state, onNavigate }) => {
@@ -50,6 +51,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ state, onNavigate 
         </div>
 
         <div className="flex items-center gap-3 shrink-0">
+          <button
+            onClick={() => onNavigate('trading')}
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs transition-colors shadow-sm"
+          >
+            <Activity className="w-4 h-4" />
+            <span>سفیر MetaTrader (Agent App)</span>
+          </button>
           <button
             onClick={() => onNavigate('playground')}
             className="flex items-center gap-2 px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs transition-colors shadow-sm"
