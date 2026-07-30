@@ -349,13 +349,14 @@ class TradingEngine {
     const broker = this.state.bridgeStatus.accountInfo?.broker || '.Markets Ltd';
     const isBridgeConnected = this.state.bridgeStatus.isConnected;
 
-    // 1. Direct Trade Commands (Buy / Sell / Close)
+    // 1. Direct Trade Commands (Buy / Sell / Close / Open Position)
     const isExplicitBuy = /خرید|بخر|buy|ارسال پوزیشن خرید/i.test(lower);
     const isExplicitSell = /فروش|بفروش|sell|ارسال پوزیشن فروش/i.test(lower);
     const isExplicitClose = /ببند|بستن|close|خروج از پوزیشن/i.test(lower);
+    const isTradeIntent = /پوزیشن|معامله|ترید|اوردر|order|position|باز کن|بازکن|ایجاد معامله/i.test(lower);
 
-    if (isExplicitBuy || isExplicitSell || isExplicitClose) {
-      if (isExplicitClose) {
+    if (isExplicitBuy || isExplicitSell || isExplicitClose || isTradeIntent) {
+      if (isExplicitClose || /ببند|بستن|خروج/i.test(lower)) {
         const res = this.createOrder({
           symbol: 'XAUUSD.m',
           type: 'CLOSE_ALL',
@@ -363,10 +364,11 @@ class TradingEngine {
           source: 'user_manual'
         });
         reply = res.success
-          ? `دستور خروج و بستن تمام پوزیشن‌ها صادر شد (شناسه: ${res.order?.id}). دستور به سفیر متاتریدر ۵ ارسال گردید.`
+          ? `دستور خروج و بستن تمام پوزیشن‌های فعال صادر شد (شناسه سفارش: \`${res.order?.id}\`). این دستور در صف ارسال به ربات سفیر متاتریدر ۵ قرار گرفت.`
           : `خطا در اجرای دستور بستن پوزیشن: ${res.error}`;
       } else {
-        const type = isExplicitBuy ? 'BUY' : 'SELL';
+        // Determine type: SELL if explicitly mentioned, otherwise default to BUY for trade intents
+        const type = isExplicitSell ? 'SELL' : 'BUY';
         
         let lot = 0.01;
         const lotMatch = userText.match(/(?:حجم|volume|lot|لات)?\s*(\d+(?:\.\d+)?)\s*(?:لات|lot)?/i);
@@ -374,8 +376,8 @@ class TradingEngine {
           lot = parseFloat(lotMatch[1]);
         }
 
-        const sl = type === 'BUY' ? currentAsk - 2.5 : currentBid + 2.5;
-        const tp = type === 'BUY' ? currentAsk + 5.0 : currentBid - 5.0;
+        const sl = type === 'BUY' ? Number((currentAsk - 2.50).toFixed(2)) : Number((currentBid + 2.50).toFixed(2));
+        const tp = type === 'BUY' ? Number((currentAsk + 5.00).toFixed(2)) : Number((currentBid - 5.00).toFixed(2));
 
         const res = this.createOrder({
           symbol: 'XAUUSD.m',
@@ -387,25 +389,26 @@ class TradingEngine {
         });
 
         if (res.success) {
-          reply = `سفارش معامله **${type === 'BUY' ? 'خرید (BUY)' : 'فروش (SELL)'}** با موفقیت صادر شد:\n\n` +
+          reply = `چشم، اطاعت شد! سفارش معامله **${type === 'BUY' ? 'خرید (BUY)' : 'فروش (SELL)'}** را همین الان ایجاد کردم:\n\n` +
             `• **نماد:** XAUUSD.m (طلا)\n` +
+            `• **نوع معامله:** ${type === 'BUY' ? 'خرید (BUY)' : 'فروش (SELL)'}\n` +
             `• **حجم معامله:** ${lot} لات\n` +
-            `• **قیمت جاری:** ${type === 'BUY' ? currentAsk : currentBid}\n` +
-            `• **حد ضرر (SL):** ${sl.toFixed(2)}\n` +
-            `• **حد سود (TP):** ${tp.toFixed(2)}\n` +
+            `• **قیمت ورود جاری:** ${type === 'BUY' ? currentAsk : currentBid}\n` +
+            `• **حد ضرر (SL):** ${sl}\n` +
+            `• **حد سود (TP):** ${tp}\n` +
             `• **شناسه سفارش:** \`${res.order?.id}\`\n\n` +
-            `این سفارش به صف معاملات سفیر متاتریدر ۵ (حساب ${accountNum} نزد ${broker}) متصل گردید.`;
+            `این سفارش به صف ربات متاتریدر ۵ (حساب ${accountNum} نزد ${broker}) اضافه شد و در پینگ بعدی اجرا خواهد شد.`;
         } else {
           reply = `خطا در ثبت سفارش معامله: ${res.error}`;
         }
       }
     }
-    // 2. Greetings and Conversational Interaction
+    // 2. Greetings and Natural Conversation
     else if (
       /^(سلام|درود|سلام علیک|salam|hi|hello|چطوری|خوبی|خسته نباشی|روز بخیر|وقت بخیر)$/i.test(trimmed) ||
       lower.startsWith('سلام') || lower.startsWith('درود') || lower.startsWith('salam')
     ) {
-      reply = `سلام و درود! وقت شما بخیر.\n\nمن **هرمس (Hermes)**، ایجنت هوشمند معامله‌گر شما هستم. موجودی فعلی حساب شما **$${currentBalance}** (حساب ${accountNum}) است.\n\nچگونه می‌توانم کمکتان کنم؟ می‌توانم بازار طلا را تحلیل کنم، پوزیشن معاملاتی جدید ثبت کنم، قوانین ریسک را بروزرسانی کنم یا به پرسش‌های شما پاسخ دهم.`;
+      reply = `سلام و درود! روزتون بخیر. خوشحالم که با شما گفتگو می‌کنم 😊\n\nمن **هرمس (Hermes)** هستم، ایجنت هوشمند معامله‌گر شما. حساب شما نزد ${broker} با موجودی **$${currentBalance}** (شماره ${accountNum}) فعال و متصل است.\n\nهر امری داشته باشید در خدمتم؛ می‌توانید دستور معامله (مثلاً: «یک پوزیشن خرید باز کن»)، درخواست تحلیل طلا، یا قوانین جدید ثبت بفرمایید.`;
     }
     // 3. Status or Account Inquiries
     else if (/موجودی|حساب|وضعیت|قیمت|طلا|balance|equity|status/i.test(lower) && !/از این به بعد|قانون/i.test(lower)) {

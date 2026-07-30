@@ -305,7 +305,14 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   // Chat, Memory & System Prompt state
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([
+    {
+      id: 'welcome_msg_1',
+      sender: 'agent',
+      text: 'سلام! من ایجنت هوشمند معامله‌گر هرمس (Hermes) هستم. دستورات، درخواست معامله، تحلیل طلا یا قوانین جدیدی بفرمایید تا فوراً انجام دهم.',
+      timestamp: new Date().toISOString(),
+    },
+  ]);
   const [agentMemory, setAgentMemory] = useState<{ id: string; category: string; content: string; createdAt: string }[]>([]);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [memoryCat, setMemoryCat] = useState('قوانین کاربری');
@@ -367,10 +374,17 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       if (res.ok) {
         const data = await res.json();
         if (data.memory) setAgentMemory(data.memory);
-        if (data.messages) setChatMessages(data.messages);
+        if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
+          setChatMessages((prev) => {
+            const map = new Map<string, any>();
+            prev.forEach((m) => map.set(m.id, m));
+            data.messages.forEach((m: any) => map.set(m.id, m));
+            return Array.from(map.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+          });
+        }
       }
     } catch (err) {
-      console.error('Failed to fetch memory and chat:', err);
+      // Keep existing chat messages in memory if network call fails
     }
   };
 
@@ -382,6 +396,17 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     setChatInput('');
     setIsSendingChat(true);
 
+    const tempUserId = `user_${Date.now()}`;
+    const tempUserMsg = {
+      id: tempUserId,
+      sender: 'user' as const,
+      text: userText,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Optimistically update chat state so user message never disappears
+    setChatMessages((prev) => [...prev, tempUserMsg]);
+
     try {
       const res = await fetch('/api/trading/chat', {
         method: 'POST',
@@ -390,12 +415,34 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.chatMessages) setChatMessages(data.chatMessages);
+        if (data.chatMessages && Array.isArray(data.chatMessages)) {
+          setChatMessages((prev) => {
+            const map = new Map<string, any>();
+            prev.forEach((m) => map.set(m.id, m));
+            data.chatMessages.forEach((m: any) => map.set(m.id, m));
+            return Array.from(map.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+          });
+        }
         if (data.agentMemory) setAgentMemory(data.agentMemory);
         fetchTradingState();
+      } else {
+        const errorMsg = {
+          id: `agent_err_${Date.now()}`,
+          sender: 'agent' as const,
+          text: 'مشکلی در پردازش دستور توسط سرور هرمس رخ داد. لطفاً دوباره تلاش کنید.',
+          timestamp: new Date().toISOString(),
+        };
+        setChatMessages((prev) => [...prev, errorMsg]);
       }
     } catch (err) {
       console.error('Failed to send chat message:', err);
+      const errorMsg = {
+        id: `agent_err_${Date.now()}`,
+        sender: 'agent' as const,
+        text: 'خطا در ارتباط با سرور. لطفا اتصال اینترنت خود را بررسی کنید.',
+        timestamp: new Date().toISOString(),
+      };
+      setChatMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsSendingChat(false);
     }
