@@ -1,5 +1,6 @@
 import { TradingState, TradeOrder, TickData, EABridgeStatus, RiskRule, AgentTradingLog } from '../types.js';
 import { supabaseService } from './supabaseClient.js';
+import { GoogleGenAI } from '@google/genai';
 
 export const DEFAULT_AGENT_SYSTEM_PROMPT = `شخصیت و هویت ایجنت معامله‌گر هرمس (Hermes AI Trading Agent):
 تو یک ایجنت معامله‌گر هوشمند، تحلیل‌گر با تجربه و مدیر ریسک حرفه‌ای در بازار طلا (XAUUSD) و فارکس هستی.
@@ -128,6 +129,26 @@ class TradingEngine {
     ],
     isAgentActive: true,
     telegramConnected: false,
+  };
+
+  private autonomousTrading: {
+    enabled: boolean;
+    startTime: number | null;
+    durationHours: number;
+    strategy: string;
+    targetProfitUSD: number;
+    stopLossUSD: number;
+    lotSize: number;
+    lastOrderTime: number | null;
+  } = {
+    enabled: false,
+    startTime: null,
+    durationHours: 8,
+    strategy: 'scalping',
+    targetProfitUSD: 1.0,
+    stopLossUSD: 2.5,
+    lotSize: 0.01,
+    lastOrderTime: null,
   };
 
   private agentMemory: { id: string; category: string; content: string; createdAt: string }[] = [];
@@ -339,6 +360,7 @@ class TradingEngine {
     await supabaseService.saveChatMessage(userMsg);
 
     let reply = '';
+    let executedAction = false;
     const trimmed = userText.trim();
     const lower = trimmed.toLowerCase();
 
@@ -349,101 +371,193 @@ class TradingEngine {
     const broker = this.state.bridgeStatus.accountInfo?.broker || '.Markets Ltd';
     const isBridgeConnected = this.state.bridgeStatus.isConnected;
 
-    // 1. Direct Trade Commands (Buy / Sell / Close / Open Position)
-    const isExplicitBuy = /خرید|بخر|buy|ارسال پوزیشن خرید/i.test(lower);
-    const isExplicitSell = /فروش|بفروش|sell|ارسال پوزیشن فروش/i.test(lower);
-    const isExplicitClose = /ببند|بستن|close|خروج از پوزیشن/i.test(lower);
-    const isTradeIntent = /پوزیشن|معامله|ترید|اوردر|order|position|باز کن|بازکن|ایجاد معامله/i.test(lower);
+    // Try Gemini AI API first for natural intelligence & deep understanding
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    if (apiKey) {
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        const contextPrompt = `
+تو ایجنت هوشمند معامله‌گر هرمس (Hermes Trading Agent) در بازار طلا (XAUUSD) هستی.
+پیام جدید کاربر: "${userText}"
 
-    if (isExplicitBuy || isExplicitSell || isExplicitClose || isTradeIntent) {
-      if (isExplicitClose || /ببند|بستن|خروج/i.test(lower)) {
+وضعیت لحظه‌ای سیستم:
+- موجودی حساب: $${currentBalance} (شماره حساب ${accountNum} نزد ${broker})
+- نرخ طلا: Ask ${currentAsk} | Bid ${currentBid}
+- حالت ترید خودکار فعلی: ${this.autonomousTrading.enabled ? `فعال (تارگت: $${this.autonomousTrading.targetProfitUSD}، استراتژی: ${this.autonomousTrading.strategy}، باقی‌مانده: ${this.autonomousTrading.durationHours} ساعت)` : 'غیرفعال'}
+- آخرین آموزه‌ها/حافظه: ${JSON.stringify(this.agentMemory.slice(0, 3))}
+
+وظیفه تو:
+تحلیل پیام کاربر (تشخیص اسکالپ، ترید خودکار ۸ ساعته، سود ۱ دلار، بستن پوزیشن، خرید/فروش، آموزه جدید).
+پاسخ را در قالب یک JSON کاملا معتبر برگردان:
+{
+  "reply": "متن پاسخ فارسی کامل، صمیمی، حرفه‌ای و دقیق به کاربر",
+  "action": "TRADE_BUY" | "TRADE_SELL" | "CLOSE_ALL" | "ENABLE_AUTONOMOUS" | "DISABLE_AUTONOMOUS" | "SAVE_MEMORY" | "CHAT",
+  "lot": 0.01,
+  "targetProfitUSD": 1.0,
+  "durationHours": 8,
+  "memoryNote": "متن قانون یا استراتژی جهت ثبت در Supabase"
+}
+`;
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: contextPrompt,
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+
+        if (response.text) {
+          const parsed = JSON.parse(response.text);
+          if (parsed.reply) {
+            reply = parsed.reply;
+
+            if (parsed.action === 'ENABLE_AUTONOMOUS' || /اسکالپ|خودکار|ترید کن|۸ ساعت|8 ساعت|قانع|سود کم|۱ دلار|یک دلار/i.test(lower)) {
+              this.autonomousTrading = {
+                enabled: true,
+                startTime: Date.now(),
+                durationHours: parsed.durationHours || 8,
+                strategy: 'scalping',
+                targetProfitUSD: parsed.targetProfitUSD || 1.0,
+                stopLossUSD: 2.5,
+                lotSize: parsed.lot || 0.01,
+                lastOrderTime: null,
+              };
+              await this.addMemoryNote(
+                'استراتژی اسکالپ خودکار',
+                `معامله خودکار ${this.autonomousTrading.durationHours} ساعته فعال شد. سود هدف: $${this.autonomousTrading.targetProfitUSD}، حجم: ${this.autonomousTrading.lotSize} لات.`
+              );
+              this.createOrder({
+                symbol: 'XAUUSD.m',
+                type: 'BUY',
+                lot: 0.01,
+                sl: Number((currentAsk - 2.5).toFixed(2)),
+                tp: Number((currentAsk + 1.0).toFixed(2)),
+                source: 'ai_agent',
+              });
+            } else if (parsed.action === 'TRADE_BUY' || parsed.action === 'TRADE_SELL') {
+              const type = parsed.action === 'TRADE_BUY' ? 'BUY' : 'SELL';
+              const sl = type === 'BUY' ? Number((currentAsk - 2.5).toFixed(2)) : Number((currentBid + 2.5).toFixed(2));
+              const tp = type === 'BUY' ? Number((currentAsk + 1.0).toFixed(2)) : Number((currentBid - 1.0).toFixed(2));
+              this.createOrder({
+                symbol: 'XAUUSD.m',
+                type,
+                lot: parsed.lot || 0.01,
+                sl,
+                tp,
+                source: 'ai_agent',
+              });
+            } else if (parsed.action === 'CLOSE_ALL') {
+              this.createOrder({
+                symbol: 'XAUUSD.m',
+                type: 'CLOSE_ALL',
+                lot: 0.01,
+                source: 'user_manual',
+              });
+            }
+
+            if (parsed.memoryNote) {
+              await this.addMemoryNote('آموزه کاربر', parsed.memoryNote);
+            }
+
+            executedAction = true;
+          }
+        }
+      } catch (err) {
+        console.warn('[TradingEngine] Gemini API call fallback to rule engine:', err);
+      }
+    }
+
+    // Fallback Rule Engine if Gemini API key is not present or calls fail
+    if (!executedAction) {
+      const isScalpOrAutonomousIntent = /اسکالپ|خودکار|ترید کن|۸ ساعت|8 ساعت|قانع|سود کم|۱ دلار|یک دلار|اختیار|تا صبح|پشت سر هم/i.test(lower);
+      const isExplicitBuy = /خرید|بخر|buy|ارسال پوزیشن خرید/i.test(lower);
+      const isExplicitSell = /فروش|بفروش|sell|ارسال پوزیشن فروش/i.test(lower);
+      const isExplicitClose = /ببند|بستن|close|خروج/i.test(lower);
+      const isTradeIntent = /پوزیشن|معامله|ترید|اوردر|order|position|باز کن|بازکن|ایجاد معامله/i.test(lower);
+
+      if (isScalpOrAutonomousIntent) {
+        this.autonomousTrading = {
+          enabled: true,
+          startTime: Date.now(),
+          durationHours: 8,
+          strategy: 'scalping',
+          targetProfitUSD: 1.0,
+          stopLossUSD: 2.5,
+          lotSize: 0.01,
+          lastOrderTime: Date.now(),
+        };
+
+        await this.addMemoryNote(
+          'استراتژی اسکالپ و معامله خودکار',
+          `از این به بعد ربات به صورت خودکار تا ۸ ساعت آینده معاملات سریع اسکالپ (حجم ۰.۰۱ لات) انجام می‌دهد. با وصول حدود ۱ دلار سود، پوزیشن بلافاصله بسته می‌شود.`
+        );
+
+        const sl = Number((currentAsk - 2.5).toFixed(2));
+        const tp = Number((currentAsk + 1.0).toFixed(2));
+        const firstOrder = this.createOrder({
+          symbol: 'XAUUSD.m',
+          type: 'BUY',
+          lot: 0.01,
+          sl,
+          tp,
+          source: 'ai_agent',
+        });
+
+        reply =
+          `اطاعت شد! **استراتژی اسکالپ و ترید خودکار ۸ ساعته ایجنت هرمس** همین حالا فعال گردید 🚀\n\n` +
+          `• **مدت زمان فعالیت خودکار:** ۸ ساعت آینده (تا صبح بدون نیاز به حضور شما)\n` +
+          `• **استراتژی:** اسکالپ سریع (سود کم، خطر بسیار پایین)\n` +
+          `• **حد سود هر معامله (TP):** ۱.۰۰ دلار سود (تارگت سریع: ${tp})\n` +
+          `• **حجم معاملات:** ۰.۰۱ لات (مدیریت ریسک کاملاً فشرده)\n` +
+          `• **اولین معامله آزمایشی:** سفارش خرید با شناسه \`${firstOrder.order?.id}\` صادر گردید.\n\n` +
+          `ایجنت تا ۸ ساعت آینده به‌طور پیوسته نوسانات بازار طلا را رصد کرده، با به دست آمدن ۱ دلار سود معامله را می‌بندد و معامله بعدی را باز می‌کند. آموزه در **حافظه Supabase** ثبت شد.`;
+      } else if (isExplicitClose) {
         const res = this.createOrder({
           symbol: 'XAUUSD.m',
           type: 'CLOSE_ALL',
           lot: 0.01,
-          source: 'user_manual'
+          source: 'user_manual',
         });
         reply = res.success
           ? `دستور خروج و بستن تمام پوزیشن‌های فعال صادر شد (شناسه سفارش: \`${res.order?.id}\`). این دستور در صف ارسال به ربات سفیر متاتریدر ۵ قرار گرفت.`
           : `خطا در اجرای دستور بستن پوزیشن: ${res.error}`;
-      } else {
-        // Determine type: SELL if explicitly mentioned, otherwise default to BUY for trade intents
+      } else if (isExplicitBuy || isExplicitSell || isTradeIntent) {
         const type = isExplicitSell ? 'SELL' : 'BUY';
-        
-        let lot = 0.01;
-        const lotMatch = userText.match(/(?:حجم|volume|lot|لات)?\s*(\d+(?:\.\d+)?)\s*(?:لات|lot)?/i);
-        if (lotMatch && parseFloat(lotMatch[1]) > 0 && parseFloat(lotMatch[1]) <= 1.0) {
-          lot = parseFloat(lotMatch[1]);
-        }
-
-        const sl = type === 'BUY' ? Number((currentAsk - 2.50).toFixed(2)) : Number((currentBid + 2.50).toFixed(2));
-        const tp = type === 'BUY' ? Number((currentAsk + 5.00).toFixed(2)) : Number((currentBid - 5.00).toFixed(2));
+        const sl = type === 'BUY' ? Number((currentAsk - 2.5).toFixed(2)) : Number((currentBid + 2.5).toFixed(2));
+        const tp = type === 'BUY' ? Number((currentAsk + 1.0).toFixed(2)) : Number((currentBid - 1.0).toFixed(2));
 
         const res = this.createOrder({
           symbol: 'XAUUSD.m',
           type,
-          lot,
+          lot: 0.01,
           sl,
           tp,
-          source: 'user_manual'
+          source: 'user_manual',
         });
 
-        if (res.success) {
-          reply = `چشم، اطاعت شد! سفارش معامله **${type === 'BUY' ? 'خرید (BUY)' : 'فروش (SELL)'}** را همین الان ایجاد کردم:\n\n` +
-            `• **نماد:** XAUUSD.m (طلا)\n` +
-            `• **نوع معامله:** ${type === 'BUY' ? 'خرید (BUY)' : 'فروش (SELL)'}\n` +
-            `• **حجم معامله:** ${lot} لات\n` +
-            `• **قیمت ورود جاری:** ${type === 'BUY' ? currentAsk : currentBid}\n` +
-            `• **حد ضرر (SL):** ${sl}\n` +
-            `• **حد سود (TP):** ${tp}\n` +
-            `• **شناسه سفارش:** \`${res.order?.id}\`\n\n` +
-            `این سفارش به صف ربات متاتریدر ۵ (حساب ${accountNum} نزد ${broker}) اضافه شد و در پینگ بعدی اجرا خواهد شد.`;
-        } else {
-          reply = `خطا در ثبت سفارش معامله: ${res.error}`;
-        }
+        reply = res.success
+          ? `سفارش معامله **${type === 'BUY' ? 'خرید (BUY)' : 'فروش (SELL)'}** روی نماد طلا با موفقیت ایجاد گردید (شناسه سفارش: \`${res.order?.id}\`).`
+          : `خطا در ثبت سفارش: ${res.error}`;
+      } else if (
+        /^(سلام|درود|سلام علیک|salam|hi|hello|چطوری|خوبی|خسته نباشی|روز بخیر|وقت بخیر)$/i.test(trimmed) ||
+        lower.startsWith('سلام') || lower.startsWith('درود')
+      ) {
+        reply = `سلام و درود! روزتون بخیر. خوشحالم که با شما گفتگو می‌کنم 😊\n\nمن **هرمس (Hermes)** هستم، ایجنت هوشمند معامله‌گر شما. حساب شما نزد ${broker} با موجودی **$${currentBalance}** (شماره ${accountNum}) فعال و متصل است.\n\nهر امری داشته باشید در خدمتم؛ می‌توانید دستور معامله (مثلاً: «یک پوزیشن خرید باز کن»)، درخواست ترید خودکار اسکالپ، یا قوانین جدید ثبت بفرمایید.`;
+      } else if (/موجودی|حساب|وضعیت|قیمت|طلا|balance|equity|status/i.test(lower)) {
+        reply =
+          `گزارش وضعیت حساب و متاتریدر ۵:\n\n` +
+          `• **موجودی حساب (Balance):** $${currentBalance}\n` +
+          `• **ارزش خالص (Equity):** $${currentBalance}\n` +
+          `• **وضعیت اتصال MT5:** ${isBridgeConnected ? '🟢 متصل و فعال' : '🟡 آماده به کار'}\n` +
+          `• **وضعیت ترید خودکار:** ${this.autonomousTrading.enabled ? '🟢 فعال (اسکالپ ۸ ساعته)' : '⚪ غیرفعال'}\n` +
+          `• **نرخ خرید طلا (Ask):** ${currentAsk}\n` +
+          `• **نرخ فروش طلا (Bid):** ${currentBid}`;
+      } else if (/قانون|دستورالعمل|از این به بعد|قوانین|استراتژی/i.test(lower)) {
+        await this.addMemoryNote('قوانین و استراتژی کاربر', userText);
+        reply = `دستورالعمل و استراتژی جدید شما در **حافظه بلندمدت Supabase** ثبت شد: "${userText}". ایجنت در تحلیل‌ها و معاملات بعدی طبق آن عمل خواهد نمود.`;
+      } else {
+        reply = `پیام شما دریافت شد. من ایجنت هوشمند هرمس هستم. استراتژی اسکالپ، ترید خودکار ۸ ساعته یا هر دستور معاملاتی دیگری داشته باشید، فوراً برایتان اجرا خواهم نمود.`;
       }
-    }
-    // 2. Greetings and Natural Conversation
-    else if (
-      /^(سلام|درود|سلام علیک|salam|hi|hello|چطوری|خوبی|خسته نباشی|روز بخیر|وقت بخیر)$/i.test(trimmed) ||
-      lower.startsWith('سلام') || lower.startsWith('درود') || lower.startsWith('salam')
-    ) {
-      reply = `سلام و درود! روزتون بخیر. خوشحالم که با شما گفتگو می‌کنم 😊\n\nمن **هرمس (Hermes)** هستم، ایجنت هوشمند معامله‌گر شما. حساب شما نزد ${broker} با موجودی **$${currentBalance}** (شماره ${accountNum}) فعال و متصل است.\n\nهر امری داشته باشید در خدمتم؛ می‌توانید دستور معامله (مثلاً: «یک پوزیشن خرید باز کن»)، درخواست تحلیل طلا، یا قوانین جدید ثبت بفرمایید.`;
-    }
-    // 3. Status or Account Inquiries
-    else if (/موجودی|حساب|وضعیت|قیمت|طلا|balance|equity|status/i.test(lower) && !/از این به بعد|قانون/i.test(lower)) {
-      reply = `گزارش لحظه‌ای وضعیت حساب و متاتریدر ۵:\n\n` +
-        `• **موجودی حساب (Balance):** $${currentBalance}\n` +
-        `• **ارزش خالص (Equity):** $${currentBalance}\n` +
-        `• **وضعیت اتصال سفیر MT5:** ${isBridgeConnected ? '🟢 متصل و فعال' : '🟡 آماده به کار'}\n` +
-        `• **نرخ خرید طلا (Ask):** ${currentAsk}\n` +
-        `• **نرخ فروش طلا (Bid):** ${currentBid}\n` +
-        `• **بروکر:** ${broker}\n` +
-        `• **شماره حساب:** ${accountNum}`;
-    }
-    // 4. Request for Analysis or Autonomous Engine
-    else if (/تحلیل|آنالیز|ارزیابی|بررسی بازار|engine|فرآیند/i.test(lower)) {
-      const analysis = this.runAutonomousAnalysis();
-      reply = `تحلیل جامع بازار طلا بر اساس **فرآیند ۸ مرحله‌ای ایجنت هرمس**:\n\n` +
-        `📊 **۱. وضعیت بازار:** ${analysis.stage1_marketState}\n` +
-        `🔍 **۲. رژیم بازار:** ${analysis.stage2_marketRegime}\n` +
-        `📈 **۳. تحلیل تکنیکال:** ${analysis.stage3_technicalAnalysis}\n` +
-        `📰 **۴. فاندامنتال:** ${analysis.stage4_fundamentalGuard}\n` +
-        `📝 **۵. سناریوها:** ${analysis.stage5_scenarios}\n` +
-        `🛡️ **۶. مدیریت ریسک:** ${analysis.stage6_riskCalculations}\n` +
-        `✅ **۷. چک‌لیست ورود:** ارزیابی شروط ۷‌گانه انجام شد.\n` +
-        `🚀 **۸. تصمیم نهایی:** ${analysis.reasoning}`;
-    }
-    // 5. Explicit Strategy Instructions & Long-Term Memory Rules
-    else if (
-      /قانون|دستورالعمل|از این به بعد|قوانین|ریسک را|حد ضرر|حد سود|استراتژی/i.test(lower)
-    ) {
-      await this.addMemoryNote('قوانین و استراتژی کاربر', userText);
-      reply = `دستورالعمل استراتژی شما دریافت شد: "${userText}". این آموزه به صورت دائمی در **حافظه بلندمدت Supabase** ثبت شد و ایجنت در تحلیل‌ها و معاملات بعدی طبق آن عمل خواهد کرد.`;
-    }
-    // 6. General Questions & Assistance
-    else {
-      reply = `متوجه پیام شما شدم. من ایجنت معامله‌گر شما هستم. اگر مایلید پوزیشن معاملاتی (خرید/فروش) باز کنم، یا تحلیل بازار انجام دهم، یا قانون جدیدی برای ریسک ثبت کنم، کافیست امر بفرمایید.`;
     }
 
     const agentMsg = {
@@ -515,7 +629,46 @@ class TradingEngine {
       };
     }
 
-    // 3. Collect & return pending orders to EA
+    // 3. Autonomous Scalping Loop Check
+    if (this.autonomousTrading.enabled) {
+      const elapsed = Date.now() - (this.autonomousTrading.startTime || Date.now());
+      const durationMs = this.autonomousTrading.durationHours * 3600 * 1000;
+
+      if (elapsed > durationMs) {
+        this.autonomousTrading.enabled = false;
+        this.logTradingActivity('ai_analysis', `[ترید خودکار هرمس] مهلت ${this.autonomousTrading.durationHours} ساعته معامله خودکار پایان یافت.`);
+      } else {
+        const hasPending = this.state.pendingOrders.some((o) => o.status === 'pending');
+        const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0;
+        const timeSinceLastOrder = Date.now() - (this.autonomousTrading.lastOrderTime || 0);
+
+        // Auto-dispatch a new low-risk scalp trade if flat and 30s elapsed
+        if (openPositions === 0 && !hasPending && timeSinceLastOrder > 30000) {
+          const ask = this.state.lastTick?.ask || 4107.81;
+          const sl = Number((ask - 2.50).toFixed(2));
+          const tp = Number((ask + 1.00).toFixed(2)); // $1.00 target profit for 0.01 lot scalping
+
+          const res = this.createOrder({
+            symbol: 'XAUUSD.m',
+            type: 'BUY',
+            lot: this.autonomousTrading.lotSize,
+            sl,
+            tp,
+            source: 'ai_agent',
+          });
+
+          if (res.success) {
+            this.autonomousTrading.lastOrderTime = Date.now();
+            this.logTradingActivity(
+              'ai_analysis',
+              `[اسکالپ خودکار ایجنت هرمس] سفارش جدید ثبت شد. (هدف سود: $1.00 دلار | حد ضرر: $2.50 دلار | لات: ${this.autonomousTrading.lotSize})`
+            );
+          }
+        }
+      }
+    }
+
+    // 4. Collect & return pending orders to EA
     const ordersToExecute = this.state.pendingOrders.filter((o) => o.status === 'pending');
 
     return { pendingOrders: ordersToExecute };
