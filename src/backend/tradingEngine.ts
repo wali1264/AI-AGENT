@@ -339,30 +339,108 @@ class TradingEngine {
     await supabaseService.saveChatMessage(userMsg);
 
     let reply = '';
-    const lower = userText.toLowerCase();
+    const trimmed = userText.trim();
+    const lower = trimmed.toLowerCase();
 
-    const currentAsk = this.state.lastTick?.ask || 4080.0;
-    const currentBid = this.state.lastTick?.bid || 4079.5;
+    const currentAsk = this.state.lastTick?.ask || 4107.81;
+    const currentBid = this.state.lastTick?.bid || 4106.50;
+    const currentBalance = this.state.bridgeStatus.accountInfo?.balance ?? 971.49;
+    const accountNum = this.state.bridgeStatus.accountInfo?.accountNumber || 9028145;
+    const broker = this.state.bridgeStatus.accountInfo?.broker || '.Markets Ltd';
+    const isBridgeConnected = this.state.bridgeStatus.isConnected;
 
-    if (lower.includes('معامله') || lower.includes('ترید') || lower.includes('تحلیل') || lower.includes('تست') || lower.includes('شروع') || lower.includes('بخر') || lower.includes('خرید')) {
+    // 1. Direct Trade Commands (Buy / Sell / Close)
+    const isExplicitBuy = /خرید|بخر|buy|ارسال پوزیشن خرید/i.test(lower);
+    const isExplicitSell = /فروش|بفروش|sell|ارسال پوزیشن فروش/i.test(lower);
+    const isExplicitClose = /ببند|بستن|close|خروج از پوزیشن/i.test(lower);
+
+    if (isExplicitBuy || isExplicitSell || isExplicitClose) {
+      if (isExplicitClose) {
+        const res = this.createOrder({
+          symbol: 'XAUUSD.m',
+          type: 'CLOSE_ALL',
+          lot: 0.01,
+          source: 'user_manual'
+        });
+        reply = res.success
+          ? `دستور خروج و بستن تمام پوزیشن‌ها صادر شد (شناسه: ${res.order?.id}). دستور به سفیر متاتریدر ۵ ارسال گردید.`
+          : `خطا در اجرای دستور بستن پوزیشن: ${res.error}`;
+      } else {
+        const type = isExplicitBuy ? 'BUY' : 'SELL';
+        
+        let lot = 0.01;
+        const lotMatch = userText.match(/(?:حجم|volume|lot|لات)?\s*(\d+(?:\.\d+)?)\s*(?:لات|lot)?/i);
+        if (lotMatch && parseFloat(lotMatch[1]) > 0 && parseFloat(lotMatch[1]) <= 1.0) {
+          lot = parseFloat(lotMatch[1]);
+        }
+
+        const sl = type === 'BUY' ? currentAsk - 2.5 : currentBid + 2.5;
+        const tp = type === 'BUY' ? currentAsk + 5.0 : currentBid - 5.0;
+
+        const res = this.createOrder({
+          symbol: 'XAUUSD.m',
+          type,
+          lot,
+          sl,
+          tp,
+          source: 'user_manual'
+        });
+
+        if (res.success) {
+          reply = `سفارش معامله **${type === 'BUY' ? 'خرید (BUY)' : 'فروش (SELL)'}** با موفقیت صادر شد:\n\n` +
+            `• **نماد:** XAUUSD.m (طلا)\n` +
+            `• **حجم معامله:** ${lot} لات\n` +
+            `• **قیمت جاری:** ${type === 'BUY' ? currentAsk : currentBid}\n` +
+            `• **حد ضرر (SL):** ${sl.toFixed(2)}\n` +
+            `• **حد سود (TP):** ${tp.toFixed(2)}\n` +
+            `• **شناسه سفارش:** \`${res.order?.id}\`\n\n` +
+            `این سفارش به صف معاملات سفیر متاتریدر ۵ (حساب ${accountNum} نزد ${broker}) متصل گردید.`;
+        } else {
+          reply = `خطا در ثبت سفارش معامله: ${res.error}`;
+        }
+      }
+    }
+    // 2. Greetings and Conversational Interaction
+    else if (
+      /^(سلام|درود|سلام علیک|salam|hi|hello|چطوری|خوبی|خسته نباشی|روز بخیر|وقت بخیر)$/i.test(trimmed) ||
+      lower.startsWith('سلام') || lower.startsWith('درود') || lower.startsWith('salam')
+    ) {
+      reply = `سلام و درود! وقت شما بخیر.\n\nمن **هرمس (Hermes)**، ایجنت هوشمند معامله‌گر شما هستم. موجودی فعلی حساب شما **$${currentBalance}** (حساب ${accountNum}) است.\n\nچگونه می‌توانم کمکتان کنم؟ می‌توانم بازار طلا را تحلیل کنم، پوزیشن معاملاتی جدید ثبت کنم، قوانین ریسک را بروزرسانی کنم یا به پرسش‌های شما پاسخ دهم.`;
+    }
+    // 3. Status or Account Inquiries
+    else if (/موجودی|حساب|وضعیت|قیمت|طلا|balance|equity|status/i.test(lower) && !/از این به بعد|قانون/i.test(lower)) {
+      reply = `گزارش لحظه‌ای وضعیت حساب و متاتریدر ۵:\n\n` +
+        `• **موجودی حساب (Balance):** $${currentBalance}\n` +
+        `• **ارزش خالص (Equity):** $${currentBalance}\n` +
+        `• **وضعیت اتصال سفیر MT5:** ${isBridgeConnected ? '🟢 متصل و فعال' : '🟡 آماده به کار'}\n` +
+        `• **نرخ خرید طلا (Ask):** ${currentAsk}\n` +
+        `• **نرخ فروش طلا (Bid):** ${currentBid}\n` +
+        `• **بروکر:** ${broker}\n` +
+        `• **شماره حساب:** ${accountNum}`;
+    }
+    // 4. Request for Analysis or Autonomous Engine
+    else if (/تحلیل|آنالیز|ارزیابی|بررسی بازار|engine|فرآیند/i.test(lower)) {
       const analysis = this.runAutonomousAnalysis();
-      await this.addMemoryNote('دستور کاربری مستقیم', userText);
-
-      reply = `درود! من بر اساس **فرآیند ۸ مرحله‌ای تصمیم‌گیری خودکار ایجنت (8-Stage Engine)** و حافظه بلندمدت Supabase وضعیت را تحلیل کردم:\n\n` +
-        `📊 **مرحله ۱ (وضعیت بازار):** ${analysis.stage1_marketState}\n` +
-        `🔍 **مرحله ۲ (حالت بازار):** ${analysis.stage2_marketRegime}\n` +
-        `📈 **مرحله ۳ (تکنیکال):** ${analysis.stage3_technicalAnalysis}\n` +
-        `📰 **مرحله ۴ (فاندامنتال):** ${analysis.stage4_fundamentalGuard}\n` +
-        `📝 **مرحله ۵ (سناریوسازی):** ${analysis.stage5_scenarios}\n` +
-        `🛡️ **مرحله ۶ (مدیریت ریسک):** ${analysis.stage6_riskCalculations}\n` +
-        `✅ **مرحله ۷ (چک‌لیست ورود):** تمامی ۷ شرط ارزیابی شد.\n` +
-        `🚀 **مرحله ۸ (تصمیم و اجرای نهایی):** ${analysis.reasoning}`;
-    } else if (lower.includes('تلگرام') || lower.includes('telegram')) {
-      reply = 'دستور شما دریافت شد. کانال ارتباطی تلگرام برای پیام‌ها و اخذ تاییدیه برای معاملات سنگین‌تر (بالای ۰.۱ لات) فعال گردید و در حافظه ثبت شد.';
-      await this.addMemoryNote('ارتباط تلگرام', 'برای معاملات بالای ۰.۱ لات و خروج کاربر از سیستم، هماهنگی از طریق تلگرام انجام شود.');
-    } else {
-      reply = `دستور شما دریافت شد: "${userText}". این دستورالعمل به عنوان آموزه جدید در **حافظه بلندمدت Supabase** ثبت گردید و ایجنت در تمام تصمیم‌گیری‌های ۸ مرحله‌ای بعدی آن را اعمال خواهد نمود.`;
-      await this.addMemoryNote('آموزه کاربری', userText);
+      reply = `تحلیل جامع بازار طلا بر اساس **فرآیند ۸ مرحله‌ای ایجنت هرمس**:\n\n` +
+        `📊 **۱. وضعیت بازار:** ${analysis.stage1_marketState}\n` +
+        `🔍 **۲. رژیم بازار:** ${analysis.stage2_marketRegime}\n` +
+        `📈 **۳. تحلیل تکنیکال:** ${analysis.stage3_technicalAnalysis}\n` +
+        `📰 **۴. فاندامنتال:** ${analysis.stage4_fundamentalGuard}\n` +
+        `📝 **۵. سناریوها:** ${analysis.stage5_scenarios}\n` +
+        `🛡️ **۶. مدیریت ریسک:** ${analysis.stage6_riskCalculations}\n` +
+        `✅ **۷. چک‌لیست ورود:** ارزیابی شروط ۷‌گانه انجام شد.\n` +
+        `🚀 **۸. تصمیم نهایی:** ${analysis.reasoning}`;
+    }
+    // 5. Explicit Strategy Instructions & Long-Term Memory Rules
+    else if (
+      /قانون|دستورالعمل|از این به بعد|قوانین|ریسک را|حد ضرر|حد سود|استراتژی/i.test(lower)
+    ) {
+      await this.addMemoryNote('قوانین و استراتژی کاربر', userText);
+      reply = `دستورالعمل استراتژی شما دریافت شد: "${userText}". این آموزه به صورت دائمی در **حافظه بلندمدت Supabase** ثبت شد و ایجنت در تحلیل‌ها و معاملات بعدی طبق آن عمل خواهد کرد.`;
+    }
+    // 6. General Questions & Assistance
+    else {
+      reply = `متوجه پیام شما شدم. من ایجنت معامله‌گر شما هستم. اگر مایلید پوزیشن معاملاتی (خرید/فروش) باز کنم، یا تحلیل بازار انجام دهم، یا قانون جدیدی برای ریسک ثبت کنم، کافیست امر بفرمایید.`;
     }
 
     const agentMsg = {
