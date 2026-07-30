@@ -77,6 +77,16 @@ class TradingEngine {
     telegramConnected: false,
   };
 
+  private agentMemory: { id: string; category: string; content: string; createdAt: string }[] = [];
+  private chatMessages: { id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[] = [
+    {
+      id: 'msg_welcome',
+      sender: 'agent',
+      text: 'سلام! من ایجنت معامله‌گر هرمس هستم. دستورات و قوانین معامله خودتان را بدهید تا در حافظه بلندمدت Supabase ذخیره کنم و بر اساس آن عمل کنم.',
+      timestamp: new Date().toISOString(),
+    },
+  ];
+
   constructor() {
     // Asynchronously sync state from Supabase if available
     this.initSupabaseSync();
@@ -84,17 +94,175 @@ class TradingEngine {
 
   private async initSupabaseSync() {
     try {
+      // 1. Fetch risk rules
       const savedRules = await supabaseService.fetchRiskRules();
       if (savedRules && savedRules.length > 0) {
         this.state.riskRules = savedRules;
         console.log('[TradingEngine] Successfully loaded risk rules from Supabase.');
       } else {
-        // Seed default rules to Supabase
         await supabaseService.saveRiskRules(INITIAL_RISK_RULES);
+      }
+
+      // 2. Fetch past trade orders
+      const savedOrders = await supabaseService.fetchTradeOrders();
+      if (savedOrders && savedOrders.length > 0) {
+        this.state.orderHistory = savedOrders;
+        console.log(`[TradingEngine] Successfully loaded ${savedOrders.length} trade orders from Supabase.`);
+      }
+
+      // 3. Fetch trading logs
+      const savedLogs = await supabaseService.fetchTradingLogs();
+      if (savedLogs && savedLogs.length > 0) {
+        this.state.tradingLogs = savedLogs;
+        console.log(`[TradingEngine] Successfully loaded ${savedLogs.length} logs from Supabase.`);
+      }
+
+      // 4. Fetch Agent Memory
+      const savedMemory = await supabaseService.fetchAgentMemory();
+      if (savedMemory && savedMemory.length > 0) {
+        this.agentMemory = savedMemory;
+        console.log(`[TradingEngine] Successfully loaded ${savedMemory.length} memory entries from Supabase.`);
+      } else {
+        // Seed initial default instruction memory note
+        const defaultNote = {
+          id: 'mem_init',
+          category: 'قوانین معاملاتی',
+          content: 'بدون حد ضرر معامله باز نکن. معاملات بالای ۰.۱ لات نیاز به تایید دارند.',
+          createdAt: new Date().toISOString(),
+        };
+        this.agentMemory = [defaultNote];
+        await supabaseService.saveAgentMemoryNote(defaultNote);
+      }
+
+      // 5. Fetch Chat History
+      const savedChats = await supabaseService.fetchChatMessages();
+      if (savedChats && savedChats.length > 0) {
+        this.chatMessages = savedChats;
+        console.log(`[TradingEngine] Successfully loaded ${savedChats.length} chat messages from Supabase.`);
       }
     } catch (err) {
       console.error('[TradingEngine] Error initializing Supabase sync:', err);
     }
+  }
+
+  public getMemory() {
+    return this.agentMemory;
+  }
+
+  public async addMemoryNote(category: string, content: string) {
+    const note = {
+      id: `mem_${Date.now()}`,
+      category: category || 'دستور کاربری',
+      content,
+      createdAt: new Date().toISOString(),
+    };
+    this.agentMemory.unshift(note);
+    await supabaseService.saveAgentMemoryNote(note);
+    this.logTradingActivity('ai_analysis', `حافظه جدید ثبت شد: [${note.category}] ${note.content}`);
+    return note;
+  }
+
+  public async deleteMemoryNote(id: string) {
+    this.agentMemory = this.agentMemory.filter((m) => m.id !== id);
+    await supabaseService.deleteAgentMemoryNote(id);
+    return true;
+  }
+
+  public getChatMessages() {
+    return this.chatMessages;
+  }
+
+  public async processAgentChat(userText: string): Promise<{ reply: string; chatMessages: any[]; agentMemory: any[] }> {
+    const userMsg = {
+      id: `chat_${Date.now()}_user`,
+      sender: 'user' as const,
+      text: userText,
+      timestamp: new Date().toISOString(),
+    };
+    this.chatMessages.push(userMsg);
+    await supabaseService.saveChatMessage(userMsg);
+
+    // Smart parsing for user intent
+    let reply = '';
+    const lower = userText.toLowerCase();
+
+    const currentAsk = this.state.lastTick?.ask || 4080.0;
+    const currentBid = this.state.lastTick?.bid || 4079.5;
+
+    if (lower.includes('۳ دلار') || lower.includes('3 دلار') || lower.includes('نیم دلار') || lower.includes('0.5 دلار') || lower.includes('ضرر نکن') || lower.includes('حد ضرر')) {
+      // User's specific strategy: TP = +$3.00, SL = -$0.50 for 0.01 lot XAUUSD
+      const tpPrice = Number((currentAsk + 3.0).toFixed(2));
+      const slPrice = Number((currentAsk - 0.5).toFixed(2));
+
+      await this.addMemoryNote(
+        'استراتژی سود و حد ضرر',
+        'تارگت سود معامله: ۳ دلار (TP +3.00 دلار روی طلا). حد ضرر سخت‌گیرانه: ۰.۵ دلار (SL -0.50 دلار روی طلا). خروج سریع در صورت نوسان منفی بیش از نیم دلار.'
+      );
+
+      const orderRes = this.createOrder({
+        symbol: 'XAUUSD',
+        type: 'BUY',
+        lot: 0.01,
+        sl: slPrice,
+        tp: tpPrice,
+        source: 'ai_agent',
+      });
+
+      if (orderRes.success) {
+        reply = `بلی! دستور شما کاملاً دریافت و اجرا شد. یک معامله خرید (BUY) طلا با حجم ۰.۰۱ لات روی قیمت ${currentAsk} ثبت گردید.\n\n🎯 حد سود (TP): ${tpPrice} (دقیقاً ۳ دلار سود)\n🛡️ حد ضرر (SL): ${slPrice} (حداکثر ۰.۵ دلار ریسک)\n\nاین قانون به صورت دائمی در حافظه بلندمدت Supabase نیز ذخیره شد و ایجنت در صورت نوسان منفی نیم دلار بلافاصله معامله را می‌بندد.`;
+      } else {
+        reply = `دستور استراتژی شما در حافظه Supabase ثبت شد، اما ثبت سفارش با خطا مواجه گردید: ${orderRes.error}`;
+      }
+    } else if (lower.includes('تلگرام') || lower.includes('telegram')) {
+      reply = 'دستور شما دریافت شد. کانال ارتباطی تلگرام برای پیام‌ها و اخذ تاییدیه برای معاملات سنگین‌تر (بالای ۰.۱ لات) فعال گردید و در حافظه ثبت شد.';
+      await this.addMemoryNote('ارتباط تلگرام', 'برای معاملات بالای ۰.۱ لات و خروج کاربر از سیستم، هماهنگی از طریق تلگرام انجام شود.');
+    } else if (lower.includes('کمتر') || lower.includes('ریسک') || lower.includes('لات') || lower.includes('lot')) {
+      reply = 'قوانین ریسک و حجم معاملاتی مدنظر شما بررسی شد. این دستورالعمل در پایگاه داده Supabase ثبت شد تا ربات از ریسک اضافه خودداری کند.';
+      await this.addMemoryNote('مدیریت ریسک', userText);
+    } else if (lower.includes('بخر') || lower.includes('خرید') || lower.includes('buy')) {
+      const tpPrice = Number((currentAsk + 3.0).toFixed(2));
+      const slPrice = Number((currentAsk - 0.5).toFixed(2));
+      const orderRes = this.createOrder({ symbol: 'XAUUSD', type: 'BUY', lot: 0.01, sl: slPrice, tp: tpPrice, source: 'ai_agent' });
+      if (orderRes.success) {
+        reply = `دستور خرید طلا (XAUUSD) با حجم ۰.۰۱ لات صادر شد. (TP: ${tpPrice} | SL: ${slPrice})`;
+      } else {
+        reply = `امکان ثبت دستور خرید وجود نداشت: ${orderRes.error}`;
+      }
+    } else if (lower.includes('بفروش') || lower.includes('فروش') || lower.includes('sell')) {
+      const tpPrice = Number((currentBid - 3.0).toFixed(2));
+      const slPrice = Number((currentBid + 0.5).toFixed(2));
+      const orderRes = this.createOrder({ symbol: 'XAUUSD', type: 'SELL', lot: 0.01, sl: slPrice, tp: tpPrice, source: 'ai_agent' });
+      if (orderRes.success) {
+        reply = `دستور فروش طلا (XAUUSD) با حجم ۰.۰۱ لات صادر شد. (TP: ${tpPrice} | SL: ${slPrice})`;
+      } else {
+        reply = `امکان ثبت دستور فروش وجود نداشت: ${orderRes.error}`;
+      }
+    } else if (lower.includes('ببند') || lower.includes('close')) {
+      const orderRes = this.createOrder({ symbol: 'XAUUSD', type: 'CLOSE_ALL', lot: 0.01, source: 'ai_agent' });
+      if (orderRes.success) {
+        reply = 'دستور بستن تمامی پوزیشن‌ها صادر گردید.';
+      } else {
+        reply = `خطا در بستن پوزیشن: ${orderRes.error}`;
+      }
+    } else {
+      reply = `دستور شما دریافت شد: "${userText}". این دستور به عنوان آموزه جدید در حافظه هوشمند پایگاه داده Supabase ایجنت ذخیره گردید و در تمام تصمیم‌گیری‌های بعدی لحاض خواهد شد.`;
+      await this.addMemoryNote('آموزه کاربری', userText);
+    }
+
+    const agentMsg = {
+      id: `chat_${Date.now()}_agent`,
+      sender: 'agent' as const,
+      text: reply,
+      timestamp: new Date().toISOString(),
+    };
+    this.chatMessages.push(agentMsg);
+    await supabaseService.saveChatMessage(agentMsg);
+
+    return {
+      reply,
+      chatMessages: this.chatMessages,
+      agentMemory: this.agentMemory,
+    };
   }
 
   public getState(): TradingState {

@@ -28,6 +28,8 @@ import {
   Key,
   Shield,
   Layers,
+  Send,
+  Bookmark,
 } from 'lucide-react';
 import { TradingState, RiskRule, TradeOrder } from '../types';
 import { supabase } from '../lib/supabaseClient';
@@ -286,6 +288,84 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [newRuleValue, setNewRuleValue] = useState('');
   const [newRuleUnit, setNewRuleUnit] = useState<RiskRule['unit']>('percentage');
 
+  // Chat & Memory state
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([]);
+  const [agentMemory, setAgentMemory] = useState<{ id: string; category: string; content: string; createdAt: string }[]>([]);
+  const [isSendingChat, setIsSendingChat] = useState(false);
+  const [memoryCat, setMemoryCat] = useState('قوانین کاربری');
+  const [memoryContent, setMemoryContent] = useState('');
+
+  const fetchAgentMemoryAndChat = async () => {
+    try {
+      const res = await fetch('/api/trading/memory');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.memory) setAgentMemory(data.memory);
+        if (data.messages) setChatMessages(data.messages);
+      }
+    } catch (err) {
+      console.error('Failed to fetch memory and chat:', err);
+    }
+  };
+
+  const handleSendChat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || isSendingChat) return;
+
+    const userText = chatInput;
+    setChatInput('');
+    setIsSendingChat(true);
+
+    try {
+      const res = await fetch('/api/trading/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: userText }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.chatMessages) setChatMessages(data.chatMessages);
+        if (data.agentMemory) setAgentMemory(data.agentMemory);
+        fetchTradingState();
+      }
+    } catch (err) {
+      console.error('Failed to send chat message:', err);
+    } finally {
+      setIsSendingChat(false);
+    }
+  };
+
+  const handleAddMemoryNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!memoryContent.trim()) return;
+
+    try {
+      const res = await fetch('/api/trading/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: memoryCat, content: memoryContent }),
+      });
+      if (res.ok) {
+        setMemoryContent('');
+        fetchAgentMemoryAndChat();
+      }
+    } catch (err) {
+      console.error('Failed to add memory note:', err);
+    }
+  };
+
+  const handleDeleteMemoryNote = async (id: string) => {
+    try {
+      const res = await fetch(`/api/trading/memory/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchAgentMemoryAndChat();
+      }
+    } catch (err) {
+      console.error('Failed to delete memory note:', err);
+    }
+  };
+
   const fetchUsersFromSupabase = async () => {
     try {
       const { data, error } = await supabase
@@ -353,7 +433,11 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     fetchEaCode();
     fetchSupabaseSql();
     fetchUsersFromSupabase();
-    const interval = setInterval(fetchTradingState, 2500); // Live poll every 2.5s
+    fetchAgentMemoryAndChat();
+    const interval = setInterval(() => {
+      fetchTradingState();
+      fetchAgentMemoryAndChat();
+    }, 2500); // Live poll every 2.5s
     return () => clearInterval(interval);
   }, []);
 
@@ -1406,41 +1490,189 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         </div>
       )}
 
-      {/* SUB-TAB 4: Trading Agent Logs & Memory */}
+      {/* SUB-TAB 4: Trading Agent Memory, Chat & Event Logs */}
       {activeSubTab === 'logs' && (
-        <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
-          <div className="flex items-center justify-between border-b pb-3 border-gray-100">
-            <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-purple-600" />
-              <span>حافظه رویدادها و تصمیمات ایجنت</span>
-            </h2>
-          </div>
+        <div className="space-y-6">
+          {/* Section 1: Chat with Agent */}
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+              <div className="space-y-1">
+                <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-indigo-600" />
+                  <span>گفتگوی مستقیم و ارسال دستور به ایجنت معامله‌گر (حافظه زنده Supabase)</span>
+                </h2>
+                <p className="text-xs text-gray-500">
+                  می‌توانید به زبان فارسی روان دستور دهید (مثلاً: «دارم از پای سیستم می‌رم، برای معاملات بالای ۰.۱ لات تلگرام پیام بده» یا «خرید ۰.۰۱ لات بگذار»).
+                </p>
+              </div>
+            </div>
 
-          <div className="space-y-2 max-h-[450px] overflow-y-auto pr-1">
-            {tradingState?.tradingLogs.map((log) => (
-              <div
-                key={log.id}
-                className="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs space-y-1 font-mono"
-              >
-                <div className="flex items-center justify-between text-gray-400 text-[10px]">
-                  <span>{new Date(log.timestamp).toLocaleString('fa-IR')}</span>
-                  <span
-                    className={`px-2 py-0.5 rounded font-sans font-semibold text-[10px] ${
-                      log.type === 'order_dispatched'
-                        ? 'bg-blue-100 text-blue-800'
-                        : log.type === 'order_result'
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : log.type === 'error'
-                        ? 'bg-rose-100 text-rose-800'
-                        : 'bg-purple-100 text-purple-800'
+            {/* Chat Messages Container */}
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 h-[280px] overflow-y-auto space-y-3 dir-rtl">
+              {chatMessages.length > 0 ? (
+                chatMessages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`flex flex-col ${
+                      msg.sender === 'user' ? 'items-end' : 'items-start'
                     }`}
                   >
-                    {log.type}
-                  </span>
+                    <div
+                      className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed font-sans ${
+                        msg.sender === 'user'
+                          ? 'bg-blue-600 text-white rounded-br-none shadow-sm'
+                          : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none shadow-sm'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 mb-1 font-bold text-[10px] opacity-80">
+                        {msg.sender === 'user' ? (
+                          <span>شما (کاربر)</span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-indigo-600">
+                            <Bot className="w-3 h-3" />
+                            <span>ایجنت هرمس</span>
+                          </span>
+                        )}
+                        <span className="font-mono text-[9px]">
+                          ({new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })})
+                        </span>
+                      </div>
+                      <p className="whitespace-pre-wrap">{msg.text}</p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="h-full flex items-center justify-center text-xs text-gray-400">
+                  هنوز پیامی رد و بدل نشده است. پیامی بنویسید...
                 </div>
-                <p className="text-gray-800 font-sans">{log.message}</p>
+              )}
+            </div>
+
+            {/* Chat Input Form */}
+            <form onSubmit={handleSendChat} className="flex gap-2">
+              <input
+                type="text"
+                placeholder="دستور یا راهنمایی خود را اینجا بنویسید (مثلاً: ریسک معاملات را کمتر کن / دستور خرید طلا بزن)..."
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-xs text-gray-900 focus:outline-none focus:border-indigo-500 shadow-sm"
+              />
+              <button
+                type="submit"
+                disabled={isSendingChat || !chatInput.trim()}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-sm"
+              >
+                <span>ارسال</span>
+                <Send className="w-3.5 h-3.5" />
+              </button>
+            </form>
+          </div>
+
+          {/* Section 2: Agent Memory Notes (Long-Term Rules stored in Supabase) */}
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+              <div className="space-y-1">
+                <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <Bookmark className="w-4 h-4 text-emerald-600" />
+                  <span>حافظه بلندمدت و آموزه‌های ثبت‌شده در Supabase (Agent Memory)</span>
+                </h2>
+                <p className="text-xs text-gray-500">
+                  این دستورالعمل‌ها در دیتابیس Supabase به صورت دائمی ذخیره شده و حتی پس از ریفرش یا خروج کاربر حفظ می‌شوند.
+                </p>
               </div>
-            ))}
+            </div>
+
+            {/* Form to Add Memory Note */}
+            <form onSubmit={handleAddMemoryNote} className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                placeholder="دسته‌بندی (مثلا: قوانین تلگرام، حد سود، خبر)"
+                value={memoryCat}
+                onChange={(e) => setMemoryCat(e.target.value)}
+                className="w-full sm:w-1/3 px-3 py-2 border border-gray-300 rounded-lg text-xs text-gray-900 focus:outline-none focus:border-emerald-500"
+              />
+              <input
+                type="text"
+                placeholder="متن کامل دستورالعمل یا آموزه کاربری..."
+                value={memoryContent}
+                onChange={(e) => setMemoryContent(e.target.value)}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs text-gray-900 focus:outline-none focus:border-emerald-500"
+                required
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1 shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+                <span>افزودن به حافظه</span>
+              </button>
+            </form>
+
+            {/* List of Memory Notes */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+              {agentMemory.map((mem) => (
+                <div
+                  key={mem.id}
+                  className="p-3.5 bg-emerald-50/60 border border-emerald-200/80 rounded-xl flex items-start justify-between gap-3 text-xs"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded font-bold text-[10px] bg-emerald-100 text-emerald-800">
+                        {mem.category}
+                      </span>
+                      <span className="text-[10px] text-gray-400 font-mono">
+                        {new Date(mem.createdAt).toLocaleDateString('fa-IR')}
+                      </span>
+                    </div>
+                    <p className="text-gray-800 leading-relaxed font-sans font-medium">{mem.content}</p>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteMemoryNote(mem.id)}
+                    className="p-1 hover:bg-rose-100 text-rose-600 rounded transition-colors shrink-0"
+                    title="حذف آموزه از حافظه"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Section 3: Technical Event Logs */}
+          <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+              <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <Activity className="w-4 h-4 text-purple-600" />
+                <span>حافظه رویدادهای سیستمی و متاتریدر ۵ (trading_logs)</span>
+              </h2>
+            </div>
+
+            <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+              {tradingState?.tradingLogs.map((log) => (
+                <div
+                  key={log.id}
+                  className="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs space-y-1 font-mono"
+                >
+                  <div className="flex items-center justify-between text-gray-400 text-[10px]">
+                    <span>{new Date(log.timestamp).toLocaleString('fa-IR')}</span>
+                    <span
+                      className={`px-2 py-0.5 rounded font-sans font-semibold text-[10px] ${
+                        log.type === 'order_dispatched'
+                          ? 'bg-blue-100 text-blue-800'
+                          : log.type === 'order_result'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : log.type === 'error'
+                          ? 'bg-rose-100 text-rose-800'
+                          : 'bg-purple-100 text-purple-800'
+                      }`}
+                    >
+                      {log.type}
+                    </span>
+                  </div>
+                  <p className="text-gray-800 font-sans">{log.message}</p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

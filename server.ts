@@ -176,9 +176,45 @@ async function startServer() {
     res.json({ code });
   });
 
+  // Trading Agent API: Memory & Instructions
+  app.get('/api/trading/memory', (req: Request, res: Response) => {
+    res.json({
+      memory: tradingEngine.getMemory(),
+      messages: tradingEngine.getChatMessages(),
+    });
+  });
+
+  app.post('/api/trading/memory', async (req: Request, res: Response) => {
+    const { category, content } = req.body || {};
+    if (!content) {
+      res.status(400).json({ error: 'متن دستورالعمل یا آموزه الزامی است.' });
+      return;
+    }
+    const note = await tradingEngine.addMemoryNote(category || 'دستور کاربری', content);
+    res.json({ success: true, note });
+  });
+
+  app.delete('/api/trading/memory/:id', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    await tradingEngine.deleteMemoryNote(id);
+    res.json({ success: true });
+  });
+
+  // Trading Agent API: Interactive Chat
+  app.post('/api/trading/chat', async (req: Request, res: Response) => {
+    const { text } = req.body || {};
+    if (!text) {
+      res.status(400).json({ error: 'متن پیام الزامی است.' });
+      return;
+    }
+    const result = await tradingEngine.processAgentChat(text);
+    res.json({ success: true, ...result });
+  });
+
   // Trading Agent API: Get Supabase SQL & Config
   app.get('/api/trading/supabase-sql', (req: Request, res: Response) => {
-    const sql = `-- Supabase Schema for Hermes Trading Agent Integration
+    const sql = `-- Complete Supabase Schema for Hermes Trading Agent
+-- Execute this SQL in Supabase Dashboard -> SQL Editor
 
 CREATE TABLE IF NOT EXISTS public.user_profiles (
   id TEXT PRIMARY KEY,
@@ -222,17 +258,42 @@ CREATE TABLE IF NOT EXISTS public.trading_logs (
   message TEXT NOT NULL
 );
 
--- Enable RLS
+CREATE TABLE IF NOT EXISTS public.agent_memory (
+  id TEXT PRIMARY KEY,
+  category TEXT DEFAULT 'general',
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.agent_chat_messages (
+  id TEXT PRIMARY KEY,
+  sender TEXT NOT NULL,
+  text TEXT NOT NULL,
+  timestamp TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable Row Level Security (RLS)
 ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.risk_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.trade_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.trading_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_memory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_chat_messages ENABLE ROW LEVEL SECURITY;
 
--- Allow public read/write for demo
+-- Allow public read/write policies for smooth integration
+DROP POLICY IF EXISTS "Public full access user_profiles" ON public.user_profiles;
+DROP POLICY IF EXISTS "Public full access risk_rules" ON public.risk_rules;
+DROP POLICY IF EXISTS "Public full access trade_orders" ON public.trade_orders;
+DROP POLICY IF EXISTS "Public full access trading_logs" ON public.trading_logs;
+DROP POLICY IF EXISTS "Public full access agent_memory" ON public.agent_memory;
+DROP POLICY IF EXISTS "Public full access agent_chat_messages" ON public.agent_chat_messages;
+
 CREATE POLICY "Public full access user_profiles" ON public.user_profiles FOR ALL USING (true);
 CREATE POLICY "Public full access risk_rules" ON public.risk_rules FOR ALL USING (true);
 CREATE POLICY "Public full access trade_orders" ON public.trade_orders FOR ALL USING (true);
 CREATE POLICY "Public full access trading_logs" ON public.trading_logs FOR ALL USING (true);
+CREATE POLICY "Public full access agent_memory" ON public.agent_memory FOR ALL USING (true);
+CREATE POLICY "Public full access agent_chat_messages" ON public.agent_chat_messages FOR ALL USING (true);
 `;
     res.json({
       sql,
