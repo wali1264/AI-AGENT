@@ -87,6 +87,14 @@ export const DEFAULT_AGENT_SYSTEM_PROMPT = `شخصیت و هویت ایجنت م
 
 const INITIAL_RISK_RULES: RiskRule[] = [
   {
+    id: 'enable_risk_guard',
+    name: 'فعال‌سازی کلی نظارت موتور ریسک',
+    description: 'در صورت فعال بودن، تمام قوانین و محدودیت‌های ریسک قبل از معامله بررسی می‌شوند.',
+    isEnabled: true,
+    value: 1,
+    unit: 'boolean',
+  },
+  {
     id: 'max_risk_per_trade',
     name: 'حداکثر ریسک هر معامله',
     description: 'درصد مجاز ریسک از موجودی (Equity) برای هر پوزیشن جدید',
@@ -97,7 +105,7 @@ const INITIAL_RISK_RULES: RiskRule[] = [
   {
     id: 'max_daily_drawdown',
     name: 'حداکثر افت روزانه حساب (Daily Loss)',
-    description: 'سقف زیان روزانه متوالی قبل از توقف خودکار ربات',
+    description: 'سقف درصد زیان روزانه متوالی قبل از توقف خودکار ربات',
     isEnabled: true,
     value: 3.0,
     unit: 'percentage',
@@ -105,7 +113,7 @@ const INITIAL_RISK_RULES: RiskRule[] = [
   {
     id: 'max_lot_size',
     name: 'حداکثر حجم معامله (Max Lot)',
-    description: 'سقف مجاز لات برای هر سفارش ارسالی',
+    description: 'سقف مجاز لات برای هر سفارش ارسالی به متاتریدر',
     isEnabled: true,
     value: 0.1,
     unit: 'lot',
@@ -119,12 +127,36 @@ const INITIAL_RISK_RULES: RiskRule[] = [
     unit: 'usd',
   },
   {
+    id: 'max_spread_limit',
+    name: 'حداکثر اسپرد مجاز نماد (Max Spread)',
+    description: 'سقف قابل قبول اسپرد نماد معامله (به پوینت/پیپ)',
+    isEnabled: true,
+    value: 50,
+    unit: 'usd',
+  },
+  {
+    id: 'max_tick_age_ms',
+    name: 'حداکثر تاخیر داده‌ها (Tick Age)',
+    description: 'حداکثر زمان مجاز از آخرین تیک دریافتی (میلی‌ثانیه)',
+    isEnabled: true,
+    value: 10000,
+    unit: 'usd',
+  },
+  {
     id: 'require_sl_tp',
     name: 'الزامی بودن حد ضرر (Stop-Loss)',
     description: 'جلوگیری از ارسال هرگونه معامله بدون حد ضرر مشخص',
     isEnabled: true,
     value: 1,
     unit: 'boolean',
+  },
+  {
+    id: 'min_margin_level',
+    name: 'حداقل سطح مارجین ایمن (Margin Level)',
+    description: 'حداقل درصد مارجین لول حساب برای اجازه معامله جدید',
+    isEnabled: true,
+    value: 150,
+    unit: 'percentage',
   },
 ];
 
@@ -380,6 +412,17 @@ class TradingEngine {
   public updateSystemPrompt(newPrompt: string): void {
     this.systemPrompt = newPrompt;
     this.logTradingActivity('ai_analysis', 'پرامپت اصلی سیستم ایجنت به‌روزرسانی شد.', { promptLength: newPrompt.length });
+  }
+
+  public getRiskRules(): RiskRule[] {
+    return this.state.riskRules;
+  }
+
+  public updateRiskRules(newRules: RiskRule[]): RiskRule[] {
+    this.state.riskRules = newRules;
+    this.logTradingActivity('rule_check', 'قوانین و پارامترهای موتور ریسک توسط کاربر به‌روزرسانی شد.', { count: newRules.length });
+    store.saveState();
+    return this.state.riskRules;
   }
 
   public async addMemoryNote(category: string, content: string) {
@@ -1158,11 +1201,7 @@ class TradingEngine {
     return true;
   }
 
-  public updateRiskRules(rules: RiskRule[]): void {
-    this.state.riskRules = rules;
-    supabaseService.saveRiskRules(rules).catch(() => {});
-    this.logTradingActivity('ai_analysis', 'قوانین مدیریت ریسک و استراتژی توسط کاربر به‌روزرسانی شد.', rules);
-  }
+
 
   public logTradingActivity(type: AgentTradingLog['type'], message: string, data?: any): void {
     const log: AgentTradingLog = {

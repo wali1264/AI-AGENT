@@ -158,6 +158,21 @@ async function startServer() {
     res.json({ status: 'ok', riskAssessment });
   });
 
+  // Trading Agent API: Dynamic Risk Engine Customization & Personalization
+  app.get('/api/trading/risk-rules', (req: Request, res: Response) => {
+    res.json({ status: 'ok', rules: tradingEngine.getRiskRules() });
+  });
+
+  app.post('/api/trading/risk-rules', (req: Request, res: Response) => {
+    const { rules } = req.body || {};
+    if (!Array.isArray(rules)) {
+      res.status(400).json({ error: 'آرایه قوانین ریسک (rules) ارسالی نامعتبر است.' });
+      return;
+    }
+    const updated = tradingEngine.updateRiskRules(rules);
+    res.json({ status: 'ok', rules: updated });
+  });
+
   // Trading Agent API: Get Multi-Timeframe Strategy Signals (Phase 4 Strategy Engine)
   app.get('/api/trading/signals', (req: Request, res: Response) => {
     const signal = tradingEngine.getTradingSignal();

@@ -9,6 +9,7 @@ import {
 export class RiskEngine {
   /**
    * Main entry point: Performs full Risk Engine assessment on a UnifiedSnapshot and optional order context.
+   * All rules, thresholds, and master switches are fully customized via activeRiskRules.
    */
   public evaluateRisk(
     snapshot: UnifiedSnapshot,
@@ -23,17 +24,31 @@ export class RiskEngine {
     const dataQuality = snapshot.dataQuality;
     const positions = snapshot.positions || [];
 
-    // Helper to check if a specific risk rule is enabled in system settings
-    const isRuleEnabled = (ruleId: string): { enabled: boolean; value: number } => {
+    // Helper to check rule status and values dynamically from activeRiskRules
+    const getRule = (ruleId: string, defaultValue: number, defaultEnabled: boolean = true) => {
       const found = activeRiskRules.find((r) => r.id === ruleId);
       return {
-        enabled: found ? found.isEnabled : true,
-        value: found ? Number(found.value) : 0,
+        enabled: found ? found.isEnabled : defaultEnabled,
+        value: found ? Number(found.value) : defaultValue,
+        name: found?.name || ruleId,
       };
     };
 
-    // Rule 1: Data Quality & Data Freshness (STALE_DATA)
-    const MAX_TICK_AGE_MS = 5000;
+    // Master Switch: Check if Risk Engine monitoring is globally enabled
+    const masterGuard = getRule('enable_risk_guard', 1, true);
+    if (!masterGuard.enabled) {
+      return {
+        isAllowed: true,
+        riskScore: 0,
+        passedRules: ['master_guard_disabled_by_user'],
+        failedRules: [],
+        maxAllowedLot: 100,
+        recommendation: 'PROCEED',
+        evaluatedAt: new Date().toISOString(),
+      };
+    }
+
+    // Rule 1: Data Quality & Connection Status
     if (!dataQuality.isConnected) {
       failedRules.push({
         ruleId: 'stale_data_disconnected',
@@ -42,59 +57,69 @@ export class RiskEngine {
         threshold: 'Connected',
         actual: 'Disconnected',
       });
-    } else if (dataQuality.lastTickAgeMs > MAX_TICK_AGE_MS) {
-      failedRules.push({
-        ruleId: 'stale_data_age',
-        name: 'تازه بودن داده‌ها (Data Freshness)',
-        reason: `سن داده‌های آخرین تیک (${(dataQuality.lastTickAgeMs / 1000).toFixed(1)} ثانیه) بیش از حد مجاز 5 ثانیه است.`,
-        threshold: `${MAX_TICK_AGE_MS}ms`,
-        actual: `${dataQuality.lastTickAgeMs}ms`,
-      });
     } else {
-      passedRules.push('stale_data_check');
+      passedRules.push('stale_data_disconnected');
     }
 
-    // Rule 2: Spread Limit (ABNORMAL_SPREAD)
-    const maxSpreadLimit = 5.0; // Max allowed spread for XAUUSD (5.0 points / $5)
-    if (market.spread > maxSpreadLimit) {
-      failedRules.push({
-        ruleId: 'abnormal_spread',
-        name: 'اسپرد غیرعادی نماد',
-        reason: `اسپرد فعلی (${market.spread}) بیش از حد مجاز (${maxSpreadLimit}) است.`,
-        threshold: maxSpreadLimit,
-        actual: market.spread,
-      });
-    } else {
-      passedRules.push('abnormal_spread');
-    }
-
-    // Rule 3: Account Drawdown Limit (MAX_DRAWDOWN)
-    const maxDrawdownRule = isRuleEnabled('max_daily_loss');
-    if (maxDrawdownRule.enabled && maxDrawdownRule.value > 0) {
-      const currentDrawdownPct = account.drawdown || 0;
-      if (currentDrawdownPct >= maxDrawdownRule.value) {
+    // Rule 2: Tick Freshness (Customizable max_tick_age_ms)
+    const tickAgeRule = getRule('max_tick_age_ms', 10000, true);
+    if (tickAgeRule.enabled && tickAgeRule.value > 0) {
+      if (dataQuality.lastTickAgeMs > tickAgeRule.value) {
         failedRules.push({
-          ruleId: 'max_daily_loss',
-          name: 'سقف افت حساب (Drawdown Limit)',
-          reason: `افت حساب جاری (${currentDrawdownPct.toFixed(2)}%) بیش از سقف مجاز (${maxDrawdownRule.value}%) است.`,
-          threshold: `${maxDrawdownRule.value}%`,
-          actual: `${currentDrawdownPct.toFixed(2)}%`,
+          ruleId: 'max_tick_age_ms',
+          name: tickAgeRule.name,
+          reason: `سن داده‌های آخرین تیک (${(dataQuality.lastTickAgeMs / 1000).toFixed(1)} ثانیه) بیش از سقف سفارشی کاربر (${(tickAgeRule.value / 1000).toFixed(1)} ثانیه) است.`,
+          threshold: `${tickAgeRule.value}ms`,
+          actual: `${dataQuality.lastTickAgeMs}ms`,
         });
       } else {
-        passedRules.push('max_daily_loss');
+        passedRules.push('max_tick_age_ms');
       }
     }
 
-    // Rule 4: Maximum Open Positions (MAX_OPEN_POSITIONS)
-    const maxPositionsRule = isRuleEnabled('max_open_positions');
-    const maxAllowedPositions = maxPositionsRule.enabled ? maxPositionsRule.value : 2;
+    // Rule 3: Spread Limit (Customizable max_spread_limit)
+    const spreadRule = getRule('max_spread_limit', 50, true);
+    if (spreadRule.enabled && spreadRule.value > 0) {
+      if (market.spread > spreadRule.value) {
+        failedRules.push({
+          ruleId: 'max_spread_limit',
+          name: spreadRule.name,
+          reason: `اسپرد فعلی نماد (${market.spread}) بیش از سقف سفارشی کاربر (${spreadRule.value}) است.`,
+          threshold: spreadRule.value,
+          actual: market.spread,
+        });
+      } else {
+        passedRules.push('max_spread_limit');
+      }
+    }
+
+    // Rule 4: Account Drawdown Limit (Customizable max_daily_drawdown / max_daily_loss)
+    const drawdownRule = getRule('max_daily_drawdown', 3.0, true);
+    if (drawdownRule.enabled && drawdownRule.value > 0) {
+      const currentDrawdownPct = account.drawdown || 0;
+      if (currentDrawdownPct >= drawdownRule.value) {
+        failedRules.push({
+          ruleId: 'max_daily_drawdown',
+          name: drawdownRule.name,
+          reason: `افت حساب جاری (${currentDrawdownPct.toFixed(2)}%) بیش از سقف سفارشی کاربر (${drawdownRule.value}%) است.`,
+          threshold: `${drawdownRule.value}%`,
+          actual: `${currentDrawdownPct.toFixed(2)}%`,
+        });
+      } else {
+        passedRules.push('max_daily_drawdown');
+      }
+    }
+
+    // Rule 5: Maximum Open Positions (Customizable max_open_positions)
+    const maxPositionsRule = getRule('max_open_positions', 2, true);
+    const maxAllowedPositions = maxPositionsRule.enabled ? maxPositionsRule.value : 10;
 
     if (proposedOrder && proposedOrder.type !== 'CLOSE' && proposedOrder.type !== 'CLOSE_ALL') {
       if (positions.length >= maxAllowedPositions) {
         failedRules.push({
           ruleId: 'max_open_positions',
-          name: 'سقف پوزیشن‌های همزمان باز',
-          reason: `تعداد پوزیشن‌های باز (${positions.length}) به حداکثر مجاز (${maxAllowedPositions}) رسیده است.`,
+          name: maxPositionsRule.name,
+          reason: `تعداد پوزیشن‌های باز همزمان (${positions.length}) به حداکثر سقف سفارشی کاربر (${maxAllowedPositions}) رسیده است.`,
           threshold: maxAllowedPositions,
           actual: positions.length,
         });
@@ -103,14 +128,14 @@ export class RiskEngine {
       }
     }
 
-    // Rule 5: Require Stop-Loss (REQUIRE_SL_TP)
-    const requireSLRule = isRuleEnabled('require_sl_tp');
+    // Rule 6: Require Stop-Loss (Customizable require_sl_tp)
+    const requireSLRule = getRule('require_sl_tp', 1, true);
     if (proposedOrder && (proposedOrder.type === 'BUY' || proposedOrder.type === 'SELL')) {
       if (requireSLRule.enabled && (!proposedOrder.sl || proposedOrder.sl <= 0)) {
         failedRules.push({
           ruleId: 'require_sl_tp',
-          name: 'الزامی بودن حد ضرر (Stop-Loss)',
-          reason: 'ارسال معامله بدون تعیین حد ضرر (Stop-Loss) توسط قوانین غیرقابل مذاکره ریسک ممنوع است.',
+          name: requireSLRule.name,
+          reason: 'ارسال معامله بدون تعیین حد ضرر (Stop-Loss) توسط قانون سفارشی کاربر ممنوع است.',
           threshold: 'SL > 0',
           actual: proposedOrder.sl || 0,
         });
@@ -119,15 +144,15 @@ export class RiskEngine {
       }
     }
 
-    // Rule 6: Maximum Lot Size (MAX_LOT_SIZE)
-    const maxLotRule = isRuleEnabled('max_lot_size');
-    const maxAllowedLot = maxLotRule.enabled && maxLotRule.value > 0 ? maxLotRule.value : 0.1;
+    // Rule 7: Maximum Lot Size (Customizable max_lot_size)
+    const maxLotRule = getRule('max_lot_size', 0.1, true);
+    const maxAllowedLot = maxLotRule.enabled && maxLotRule.value > 0 ? maxLotRule.value : 100.0;
 
     if (proposedOrder && proposedOrder.lot && proposedOrder.lot > maxAllowedLot) {
       failedRules.push({
         ruleId: 'max_lot_size',
-        name: 'سقف حجم معامله (Max Lot)',
-        reason: `حجم درخواستی (${proposedOrder.lot}) بیش از سقف مجاز (${maxAllowedLot} لات) است.`,
+        name: maxLotRule.name,
+        reason: `حجم درخواستی (${proposedOrder.lot}) بیش از سقف سفارشی کاربر (${maxAllowedLot} لات) است.`,
         threshold: maxAllowedLot,
         actual: proposedOrder.lot,
       });
@@ -135,41 +160,48 @@ export class RiskEngine {
       passedRules.push('max_lot_size');
     }
 
-    // Rule 7: Account Margin Health Level
-    if (account.margin > 0 && account.marginLevel !== undefined) {
-      if (account.marginLevel < 150) {
+    // Rule 8: Account Margin Health Level (Customizable min_margin_level)
+    const minMarginRule = getRule('min_margin_level', 150, true);
+    if (minMarginRule.enabled && account.margin > 0 && account.marginLevel !== undefined) {
+      if (account.marginLevel < minMarginRule.value) {
         failedRules.push({
-          ruleId: 'low_margin_level',
-          name: 'سطح مارجین بحرانی (Low Margin Level)',
-          reason: `سطح مارجین حساب (${account.marginLevel.toFixed(1)}%) کمتر از 150% ایمن است.`,
-          threshold: '150%',
+          ruleId: 'min_margin_level',
+          name: minMarginRule.name,
+          reason: `سطح مارجین حساب (${account.marginLevel.toFixed(1)}%) کمتر از حد آستانه ایمن کاربر (${minMarginRule.value}%) است.`,
+          threshold: `${minMarginRule.value}%`,
           actual: `${account.marginLevel.toFixed(1)}%`,
         });
       } else {
-        passedRules.push('low_margin_level');
+        passedRules.push('min_margin_level');
       }
     }
 
-    // Calculate composite Risk Score (0 = Extremely Safe, 100 = Extremely High Risk)
+    // Calculate dynamic Composite Risk Score (0 = Completely Safe, 100 = High Risk)
     let riskScore = 0;
 
-    // Component A: Data Age Risk (0-20)
-    const ageRisk = Math.min(20, Math.floor((dataQuality.lastTickAgeMs / MAX_TICK_AGE_MS) * 20));
-    riskScore += ageRisk;
+    // A. Tick Age Risk
+    if (tickAgeRule.enabled && tickAgeRule.value > 0) {
+      const ageRatio = dataQuality.lastTickAgeMs / tickAgeRule.value;
+      riskScore += Math.min(20, Math.floor(ageRatio * 20));
+    }
 
-    // Component B: Spread & Volatility Risk (0-20)
-    const spreadRisk = Math.min(20, Math.floor((market.spread / maxSpreadLimit) * 20));
-    riskScore += spreadRisk;
+    // B. Spread Risk
+    if (spreadRule.enabled && spreadRule.value > 0) {
+      const spreadRatio = market.spread / spreadRule.value;
+      riskScore += Math.min(20, Math.floor(spreadRatio * 20));
+    }
 
-    // Component C: Account Drawdown Risk (0-30)
-    const drawdownPct = account.drawdown || 0;
-    const drawdownRisk = Math.min(30, Math.floor((drawdownPct / (maxDrawdownRule.value || 3)) * 30));
-    riskScore += drawdownRisk;
+    // C. Drawdown Risk
+    if (drawdownRule.enabled && drawdownRule.value > 0) {
+      const ddRatio = (account.drawdown || 0) / drawdownRule.value;
+      riskScore += Math.min(30, Math.floor(ddRatio * 30));
+    }
 
-    // Component D: Position Saturation Risk (0-30)
-    const posRatio = positions.length / Math.max(1, maxAllowedPositions);
-    const posRisk = Math.min(30, Math.floor(posRatio * 30));
-    riskScore += posRisk;
+    // D. Position Saturation Risk
+    if (maxPositionsRule.enabled && maxAllowedPositions > 0) {
+      const posRatio = positions.length / maxAllowedPositions;
+      riskScore += Math.min(30, Math.floor(posRatio * 30));
+    }
 
     riskScore = Math.min(100, Math.max(0, riskScore));
 

@@ -510,10 +510,98 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [supabaseSql, setSupabaseSql] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('https://dqhujeggbndwcavzgnhm.supabase.co');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
-  const [activeSubTab, setActiveSubTab] = useState<'terminal' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('telemetry');
+  const [activeSubTab, setActiveSubTab] = useState<'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('risk');
+
+  // Customizable Risk Engine State
+  const [riskRules, setRiskRules] = useState<RiskRule[]>([]);
+  const [riskSaveMsg, setRiskSaveMsg] = useState<string | null>(null);
+  const [isSavingRisk, setIsSavingRisk] = useState(false);
+  const [newRuleId, setNewRuleId] = useState('');
+  const [newRuleDesc, setNewRuleDesc] = useState('');
 
   // Telemetry & Inspector State
   const [telemetryData, setTelemetryData] = useState<any | null>(null);
+
+  const fetchRiskRules = async () => {
+    try {
+      const res = await fetch('/api/trading/risk-rules');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rules && Array.isArray(data.rules)) {
+          setRiskRules(data.rules);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch risk rules:', err);
+    }
+  };
+
+  const handleSaveRiskRules = async (updatedRules?: RiskRule[]) => {
+    const targetRules = updatedRules || riskRules;
+    setIsSavingRisk(true);
+    try {
+      const res = await fetch('/api/trading/risk-rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: targetRules }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rules) setRiskRules(data.rules);
+        setRiskSaveMsg('تنظیمات و پارامترهای موتور ریسک با موفقیت ذخیره و اعمال شد.');
+        setTimeout(() => setRiskSaveMsg(null), 3000);
+        fetchTradingState();
+      }
+    } catch (err) {
+      console.error('Failed to save risk rules:', err);
+    } finally {
+      setIsSavingRisk(false);
+    }
+  };
+
+  const handleToggleRule = (ruleId: string) => {
+    const updated = riskRules.map((r) =>
+      r.id === ruleId ? { ...r, isEnabled: !r.isEnabled } : r
+    );
+    setRiskRules(updated);
+    handleSaveRiskRules(updated);
+  };
+
+  const handleRuleValueChange = (ruleId: string, val: number) => {
+    const updated = riskRules.map((r) =>
+      r.id === ruleId ? { ...r, value: val } : r
+    );
+    setRiskRules(updated);
+  };
+
+  const handleAddCustomRule = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRuleName.trim() || !newRuleValue) return;
+
+    const id = newRuleId.trim() ? newRuleId.trim().toLowerCase().replace(/\s+/g, '_') : `rule_${Date.now()}`;
+    const newRule: RiskRule = {
+      id,
+      name: newRuleName.trim(),
+      description: newRuleDesc.trim() || 'قانون سفارشی تعریف‌شده توسط کاربر',
+      isEnabled: true,
+      value: Number(newRuleValue),
+      unit: newRuleUnit,
+    };
+
+    const updated = [...riskRules, newRule];
+    setRiskRules(updated);
+    setNewRuleId('');
+    setNewRuleName('');
+    setNewRuleDesc('');
+    setNewRuleValue('');
+    handleSaveRiskRules(updated);
+  };
+
+  const handleDeleteRule = (ruleId: string) => {
+    const updated = riskRules.filter((r) => r.id !== ruleId);
+    setRiskRules(updated);
+    handleSaveRiskRules(updated);
+  };
 
   const fetchTelemetryData = async () => {
     try {
@@ -777,6 +865,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       if (res.ok) {
         const data = await res.json();
         setTradingState(data);
+        if (data.riskRules && Array.isArray(data.riskRules) && data.riskRules.length > 0) {
+          setRiskRules((prev) => (prev.length === 0 ? data.riskRules : prev));
+        }
       }
     } catch (err) {
       console.error('Failed to fetch trading state:', err);
@@ -811,6 +902,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   useEffect(() => {
     fetchTradingState();
+    fetchRiskRules();
     fetchEaCode();
     fetchSupabaseSql();
     fetchUsersFromSupabase();
@@ -981,57 +1073,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     }
   };
 
-  // Toggle or Edit Risk Rule
-  const handleToggleRule = async (ruleId: string) => {
-    if (!tradingState) return;
-    const updatedRules = tradingState.riskRules.map((r) =>
-      r.id === ruleId ? { ...r, isEnabled: !r.isEnabled } : r
-    );
-    await saveRules(updatedRules);
-  };
 
-  const handleRuleValueChange = async (ruleId: string, newValue: string) => {
-    if (!tradingState) return;
-    const valNum = parseFloat(newValue);
-    const updatedRules = tradingState.riskRules.map((r) =>
-      r.id === ruleId ? { ...r, value: isNaN(valNum) ? newValue : valNum } : r
-    );
-    await saveRules(updatedRules);
-  };
-
-  const saveRules = async (rules: RiskRule[]) => {
-    try {
-      const res = await fetch('/api/trading/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules }),
-      });
-      if (res.ok) {
-        fetchTradingState();
-      }
-    } catch (err) {
-      console.error('Failed to save rules:', err);
-    }
-  };
-
-  const handleAddCustomRule = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newRuleName.trim() || !tradingState) return;
-
-    const newRule: RiskRule = {
-      id: `custom_${Date.now()}`,
-      name: newRuleName,
-      description: 'قانون سفارشی تعریف شده توسط کاربر',
-      isEnabled: true,
-      value: parseFloat(newRuleValue) || newRuleValue,
-      unit: newRuleUnit,
-    };
-
-    const updatedRules = [...tradingState.riskRules, newRule];
-    await saveRules(updatedRules);
-    setNewRuleName('');
-    setNewRuleValue('');
-  };
 
   const handleCopyCode = () => {
     navigator.clipboard.writeText(mqlCode);
@@ -1182,10 +1224,22 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-gray-200 pb-2">
+      <div className="flex items-center gap-2 border-b border-gray-200 pb-2 overflow-x-auto">
+        <button
+          onClick={() => setActiveSubTab('risk')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'risk'
+              ? 'bg-amber-600 text-white shadow-sm font-bold'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <ShieldCheck className="w-4 h-4 text-emerald-300" />
+          <span>موتور ریسک قابل شخصی‌سازی (Risk Engine)</span>
+        </button>
+
         <button
           onClick={() => setActiveSubTab('terminal')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'terminal'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1197,7 +1251,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('prompt')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'prompt'
               ? 'bg-indigo-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1209,7 +1263,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('telemetry')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'telemetry'
               ? 'bg-purple-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1221,7 +1275,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('supabase')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'supabase'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1233,7 +1287,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('mql')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'mql'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1245,7 +1299,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('logs')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'logs'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1255,6 +1309,290 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           <span>حافظه و لاگ‌های ایجنت</span>
         </button>
       </div>
+
+      {/* SUB-TAB: Customizable Risk Engine */}
+      {activeSubTab === 'risk' && (
+        <div className="space-y-6">
+          {/* Top Banner Card */}
+          <div className="bg-gradient-to-r from-slate-900 via-amber-950 to-slate-900 text-white p-6 rounded-2xl shadow-lg border border-amber-900/50 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-6 h-6 text-amber-400" />
+                  <h2 className="text-base font-extrabold text-white">
+                    شخصی‌سازی و تنظیمات پیشرفته موتور ریسک (Customizable Risk Engine)
+                  </h2>
+                </div>
+                <p className="text-xs text-amber-200 leading-relaxed max-w-3xl">
+                  موتور ریسک سیستم هرمس کاملاً پویا و قابل شخصی‌سازی است. شما می‌توانید آستانه‌های مجاز برای ریسک در هر معامله، زیان روزانه، سقف لات، حداکثر پوزیشن‌های باز، اسپرد، تاخیر تیک و الزامی بودن حد ضرر را مطابق با استراتژی شخصی خود تغییر داده و ذخیره کنید.
+                </p>
+              </div>
+
+              <button
+                onClick={() => handleSaveRiskRules()}
+                disabled={isSavingRisk}
+                className="px-5 py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 shrink-0 border border-amber-300/30"
+              >
+                <Check className={`w-4 h-4 ${isSavingRisk ? 'animate-spin' : ''}`} />
+                <span>{isSavingRisk ? 'در حال ذخیره‌سازی...' : 'ذخیره و اعمال فوری قوانین ریسک'}</span>
+              </button>
+            </div>
+
+            {riskSaveMsg && (
+              <div className="p-3 bg-emerald-500/20 border border-emerald-400/40 rounded-xl text-xs text-emerald-200 flex items-center gap-2 font-bold">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{riskSaveMsg}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Master Switch Banner */}
+          {(() => {
+            const masterRule = riskRules.find((r) => r.id === 'enable_risk_guard');
+            const isEnabled = masterRule ? masterRule.isEnabled : true;
+            return (
+              <div className={`p-5 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm ${
+                isEnabled ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950' : 'bg-amber-50/80 border-amber-200 text-amber-950'
+              }`}>
+                <div className="flex items-center gap-3">
+                  <div className={`p-3 rounded-xl ${isEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                    <Shield className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold flex items-center gap-2">
+                      <span>کلید اصلی فعال‌سازی موتور ریسک (Master Guard Switch)</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        isEnabled ? 'bg-emerald-200 text-emerald-800' : 'bg-amber-200 text-amber-900'
+                      }`}>
+                        {isEnabled ? 'محافظت زنده و فعال' : 'غیرفعال (مستقیم و بدون فیلتر)'}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-gray-600 mt-1">
+                      {isEnabled
+                        ? 'موتور ریسک با قوانین تعریف‌شده زیر تمام معاملات را قبل از ارسال به متاتریدر ارزیابی و فیلتر می‌کند.'
+                        : 'توجه: با غیرفعال کردن کلید اصلی، سفارشات بدون بررسی قوانین ریسک مستقیماً اجرا می‌شوند.'}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => handleToggleRule('enable_risk_guard')}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 shrink-0 shadow-sm ${
+                    isEnabled ? 'bg-rose-600 hover:bg-rose-700 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>{isEnabled ? 'غیرفعال‌سازی موقت کلید اصلی' : 'فعال‌سازی کامل محافظت ریسک'}</span>
+                </button>
+              </div>
+            );
+          })()}
+
+          {/* Real-time Assessment Output */}
+          {tradingState?.riskAssessment && (
+            <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+                <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-indigo-600" />
+                  <span>ارزیابی لحظه‌ای موتور ریسک بر اساس آخرین وضعیت بازار و قوانین فعال</span>
+                </h3>
+                <div className="flex items-center gap-2 font-mono text-xs">
+                  <span className="text-gray-500 font-sans">امتیاز ریسک:</span>
+                  <span className={`px-2.5 py-1 rounded-full font-bold text-[11px] ${
+                    (tradingState.riskAssessment.riskScore || 0) < 30
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : (tradingState.riskAssessment.riskScore || 0) < 65
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-rose-100 text-rose-800'
+                  }`}>
+                    {tradingState.riskAssessment.riskScore || 0} / 100
+                  </span>
+                  <span className={`px-2.5 py-1 rounded-full font-bold font-sans text-[11px] ${
+                    tradingState.riskAssessment.isAllowed
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      : 'bg-rose-100 text-rose-800 border border-rose-300'
+                  }`}>
+                    توصیه: {tradingState.riskAssessment.recommendation || (tradingState.riskAssessment.isAllowed ? 'PROCEED' : 'REJECT')}
+                  </span>
+                </div>
+              </div>
+
+              {tradingState.riskAssessment.failedRules && tradingState.riskAssessment.failedRules.length > 0 ? (
+                <div className="space-y-2">
+                  <span className="text-xs font-bold text-rose-700 block">خطاهای نقض قوانین ریسک:</span>
+                  {tradingState.riskAssessment.failedRules.map((rule: any, idx: number) => (
+                    <div key={idx} className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <span className="font-bold block">{rule.name}: {rule.reason}</span>
+                        <span className="font-mono text-[11px] text-rose-700">آستانه مجاز: {rule.threshold} | مقدار فعلی: {rule.actual}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-center gap-2 font-bold">
+                  <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>تمام شرایط و قوانین سفارشی ریسک برای انجام معامله احراز شده است (آماده به کار).</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Rules Management Grid */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3 border-gray-100">
+              <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <Sliders className="w-5 h-5 text-indigo-600" />
+                <span>جدول کامل قوانین و پارامترهای قابل شخصی‌سازی ریسک ({riskRules.length} قانون)</span>
+              </h3>
+
+              <button
+                onClick={() => handleSaveRiskRules()}
+                disabled={isSavingRisk}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shrink-0 shadow-sm"
+              >
+                <Check className="w-4 h-4" />
+                <span>ذخیره کلی تغییرات</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {riskRules.map((rule) => (
+                <div
+                  key={rule.id}
+                  className={`p-4 rounded-xl border transition-all space-y-3 ${
+                    rule.isEnabled ? 'bg-gray-50/80 border-gray-200' : 'bg-gray-100/60 border-gray-200 opacity-60'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-xs text-gray-900">{rule.name}</span>
+                        <span className="font-mono text-[10px] text-gray-400">({rule.id})</span>
+                      </div>
+                      <p className="text-[11px] text-gray-500 leading-relaxed">{rule.description}</p>
+                    </div>
+
+                    <button
+                      onClick={() => handleToggleRule(rule.id)}
+                      className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-colors shrink-0 ${
+                        rule.isEnabled
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-gray-200 text-gray-600 border border-gray-300'
+                      }`}
+                    >
+                      {rule.isEnabled ? 'فعال ✓' : 'غیرفعال'}
+                    </button>
+                  </div>
+
+                  {rule.unit !== 'boolean' ? (
+                    <div className="flex items-center gap-3 pt-2 border-t border-gray-200/60">
+                      <label className="text-xs font-semibold text-gray-700 shrink-0">مقدار آستانه:</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={rule.value}
+                        onChange={(e) => handleRuleValueChange(rule.id, Number(e.target.value))}
+                        className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 bg-white focus:outline-none focus:border-indigo-500"
+                      />
+                      <span className="px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 text-xs font-bold font-mono shrink-0">
+                        {rule.unit === 'percentage' ? '%' : rule.unit === 'lot' ? 'Lot' : rule.unit === 'usd' ? 'واحد' : rule.unit}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="pt-2 border-t border-gray-200/60 text-xs text-gray-600 font-medium">
+                      نوع قانون: کنترل منطقی بولی (Boolean Control)
+                    </div>
+                  )}
+
+                  {!['enable_risk_guard', 'max_risk_per_trade', 'max_daily_drawdown', 'max_lot_size', 'max_open_positions', 'require_sl_tp', 'max_spread_limit', 'max_tick_age_ms', 'min_margin_level'].includes(rule.id) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        onClick={() => handleDeleteRule(rule.id)}
+                        className="text-[11px] text-rose-600 hover:text-rose-800 flex items-center gap-1 font-semibold"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>حذف قانون سفارشی</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Add Custom Risk Rule Form */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 border-b pb-3 border-gray-100">
+              <Plus className="w-4 h-4 text-emerald-600" />
+              <span>افزودن قانون سفارشی جدید به موتور ریسک</span>
+            </h3>
+
+            <form onSubmit={handleAddCustomRule} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">شناسه انگلیسی (ID)</label>
+                <input
+                  type="text"
+                  placeholder="مثال: max_weekend_risk"
+                  value={newRuleId}
+                  onChange={(e) => setNewRuleId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-gray-900 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">عنوان قانون (فارسی)</label>
+                <input
+                  type="text"
+                  placeholder="مثال: سقف لوریج آخر هفته"
+                  value={newRuleName}
+                  onChange={(e) => setNewRuleName(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">مقدار آستانه</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="مثال: 5"
+                  value={newRuleValue}
+                  onChange={(e) => setNewRuleValue(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-gray-900 focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">واحد سنجش</label>
+                <select
+                  value={newRuleUnit}
+                  onChange={(e) => setNewRuleUnit(e.target.value as any)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="percentage">درصد (%)</option>
+                  <option value="lot">لات (Lot)</option>
+                  <option value="usd">مبلغ / عدد (USD/Units)</option>
+                  <option value="boolean">بولی (Boolean)</option>
+                </select>
+              </div>
+
+              <div className="flex items-end">
+                <button
+                  type="submit"
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-sm"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>افزودن قانون جدید</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* SUB-TAB 1: Terminal & Order Dispatcher */}
       {activeSubTab === 'terminal' && (
