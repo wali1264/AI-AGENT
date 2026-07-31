@@ -1,7 +1,37 @@
-import { TradingState, TradeOrder, TickData, EABridgeStatus, RiskRule, AgentTradingLog } from '../types.js';
+import {
+  TradingState,
+  TradeOrder,
+  TickData,
+  EABridgeStatus,
+  RiskRule,
+  AgentTradingLog,
+  UnifiedSnapshot,
+  DataQualityMetrics,
+  PositionInfo,
+  SymbolSpecification,
+  ExtendedAccountInfo,
+  MarketState,
+  TimeframeOHLCV,
+  OHLCVBar,
+  MultiTimeframeIndicators,
+  IndicatorValues,
+  TimeframeType,
+  RiskAssessmentResult,
+  TradingSignal,
+  GeminiAIAnalysis,
+  ExecutionEngineResult,
+  PositionModificationRequest,
+  TelemetryRecord,
+} from '../types.js';
 import { supabaseService } from './supabaseClient.js';
 import { GoogleGenAI } from '@google/genai';
 import { store } from './store.js';
+import { indicatorEngine } from './indicatorEngine.js';
+import { riskEngine } from './riskEngine.js';
+import { strategyEngine } from './strategyEngine.js';
+import { geminiEngine } from './geminiEngine.js';
+import { executionEngine } from './executionEngine.js';
+import { telemetryEngine } from './telemetryEngine.js';
 
 export const DEFAULT_AGENT_SYSTEM_PROMPT = `شخصیت و هویت ایجنت معامله‌گر هرمس (Hermes AI Trading Agent):
 تو یک ایجنت معامله‌گر هوشمند، تحلیل‌گر با تجربه و مدیر ریسک حرفه‌ای در بازار طلا (XAUUSD) و فارکس هستی.
@@ -9,8 +39,8 @@ export const DEFAULT_AGENT_SYSTEM_PROMPT = `شخصیت و هویت ایجنت م
 
 معماری فرآیند ۸ مرحله‌ای تصمیم‌گیری خودکار (8-Stage Autonomous Decision Engine):
 
-مرحله ۱: دریافت وضعیت کامل بازار (Market State)
-قبل از هر اقدام، وضعیت لحظه‌ای نماد (XAUUSD)، قیمت Ask/Bid، اسپرد و داده‌های چند تایم‌فریم (1m, 5m, 15m, 1h, 4h, 1D) را ارزیابی کن.
+مرحله ۱: دریافت وضعیت کامل بازار (Market State & Unified Snapshot)
+قبل از هر اقدام، وضعیت لحظه‌ای نماد (XAUUSD)، قیمت Ask/Bid، اسپرد، داده‌های چند تایم‌فریم (1m, 5m, 15m, 1h, 4h, 1D) و Data Quality را ارزیابی کن.
 
 مرحله ۲: تشخیص حالت بازار (Market Regime Detection)
 تشخیص بده بازار در کدام حالت قرار دارد:
@@ -100,11 +130,17 @@ const INITIAL_RISK_RULES: RiskRule[] = [
 
 class TradingEngine {
   private systemPrompt: string = DEFAULT_AGENT_SYSTEM_PROMPT;
+  private processedClientOrderIds: Set<string> = new Set();
+  private snapshotSequence: number = 0;
+  private initialSyncCompleted: boolean = false;
+  private latestUnifiedSnapshot: UnifiedSnapshot | null = null;
+
   private state: TradingState = {
     bridgeStatus: {
       isConnected: false,
       lastHeartbeat: null,
       latencyMs: 0,
+      initialSyncCompleted: false,
       accountInfo: {
         accountNumber: 9028145,
         broker: '.Markets Ltd',
@@ -114,6 +150,17 @@ class TradingEngine {
         freeMargin: 971.49,
         openPositionsCount: 0,
         currency: 'USD',
+      },
+      dataQuality: {
+        lastTickAgeMs: 0,
+        isConnected: false,
+        isDataComplete: true,
+        latencyMs: 12,
+        serverTime: new Date().toISOString(),
+        localTime: new Date().toISOString(),
+        lastSuccessfulSync: new Date().toISOString(),
+        snapshotSequence: 0,
+        brokerServerTime: new Date().toISOString(),
       },
     },
     lastTick: null,
@@ -125,7 +172,7 @@ class TradingEngine {
         id: 'log_init',
         timestamp: new Date().toISOString(),
         type: 'ai_analysis',
-        message: 'مغز هوشمند Agent App و سیستم سفیر متاتریدر ۵ با پرامپت ۸ مرحله‌ای آماده به کار شد.',
+        message: 'مغز هوشمند Agent App با معماری Phase 1 (Unified Snapshot & Idempotency) آماده به کار شد.',
       },
     ],
     isAgentActive: true,
@@ -669,93 +716,349 @@ class TradingEngine {
     return this.state;
   }
 
-  public processHeartbeat(payload: {
-    symbol?: string;
-    ask?: number;
-    bid?: number;
-    spread?: number;
-    account?: {
-      accountNumber?: number;
-      broker?: string;
-      balance?: number;
-      equity?: number;
-      margin?: number;
-      freeMargin?: number;
-      openPositionsCount?: number;
-      currency?: string;
-    };
-    timestamp?: string;
-  }): { pendingOrders: TradeOrder[] } {
-    const now = new Date();
-    const startTime = Date.now();
+  public getIndicators(timeframe?: TimeframeType): MultiTimeframeIndicators | IndicatorValues | undefined {
+    if (!this.latestUnifiedSnapshot?.indicators) {
+      // Calculate on current candles or return fallback
+      const candles = this.latestUnifiedSnapshot?.candles || {};
+      const symbol = this.latestUnifiedSnapshot?.market.symbol || 'XAUUSD.m';
+      const computed = indicatorEngine.computeAllTimeframes(symbol, candles);
+      return timeframe ? computed[timeframe] : computed;
+    }
 
-    // 1. Update Bridge Status
+    return timeframe ? this.latestUnifiedSnapshot.indicators[timeframe] : this.latestUnifiedSnapshot.indicators;
+  }
+
+  public getRiskAssessment(proposedOrder?: Partial<TradeOrder>): RiskAssessmentResult {
+    if (this.latestUnifiedSnapshot) {
+      return riskEngine.evaluateRisk(this.latestUnifiedSnapshot, this.state.riskRules, proposedOrder);
+    }
+
+    // Return default baseline risk assessment if snapshot not yet arrived
+    const mockSnapshot: UnifiedSnapshot = {
+      snapshotVersion: '1.0.0',
+      sequence: 0,
+      timestamp: new Date().toISOString(),
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      positions: [],
+      candles: {},
+      dataQuality: this.state.bridgeStatus.dataQuality || {
+        lastTickAgeMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
+        serverTime: new Date().toISOString(),
+        localTime: new Date().toISOString(),
+        lastSuccessfulSync: new Date().toISOString(),
+        snapshotSequence: 0,
+        brokerServerTime: new Date().toISOString(),
+      },
+    };
+
+    return riskEngine.evaluateRisk(mockSnapshot, this.state.riskRules, proposedOrder);
+  }
+
+  public getTradingSignal(): TradingSignal {
+    if (this.latestUnifiedSnapshot) {
+      return strategyEngine.evaluateStrategy(this.latestUnifiedSnapshot);
+    }
+
+    const mockAssessment = this.getRiskAssessment();
+    const mockSnapshot: UnifiedSnapshot = {
+      snapshotVersion: '1.0.0',
+      sequence: 0,
+      timestamp: new Date().toISOString(),
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      positions: [],
+      candles: {},
+      riskAssessment: mockAssessment,
+      dataQuality: this.state.bridgeStatus.dataQuality || {
+        lastTickAgeMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
+        serverTime: new Date().toISOString(),
+        localTime: new Date().toISOString(),
+        lastSuccessfulSync: new Date().toISOString(),
+        snapshotSequence: 0,
+        brokerServerTime: new Date().toISOString(),
+      },
+    };
+
+    return strategyEngine.evaluateStrategy(mockSnapshot);
+  }
+
+  public async getAIAnalysis(): Promise<GeminiAIAnalysis> {
+    if (this.latestUnifiedSnapshot) {
+      return geminiEngine.analyzeSnapshot(this.latestUnifiedSnapshot);
+    }
+
+    const mockAssessment = this.getRiskAssessment();
+    const mockSignal = this.getTradingSignal();
+    const mockSnapshot: UnifiedSnapshot = {
+      snapshotVersion: '1.0.0',
+      sequence: 0,
+      timestamp: new Date().toISOString(),
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      positions: [],
+      candles: {},
+      riskAssessment: mockAssessment,
+      strategySignal: mockSignal,
+      dataQuality: this.state.bridgeStatus.dataQuality || {
+        lastTickAgeMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
+        serverTime: new Date().toISOString(),
+        localTime: new Date().toISOString(),
+        lastSuccessfulSync: new Date().toISOString(),
+        snapshotSequence: 0,
+        brokerServerTime: new Date().toISOString(),
+      },
+    };
+
+    return geminiEngine.analyzeSnapshot(mockSnapshot);
+  }
+
+  public getExecutionResult(): ExecutionEngineResult {
+    if (this.latestUnifiedSnapshot) {
+      return executionEngine.processExecution(this.latestUnifiedSnapshot, this.state.isAgentActive);
+    }
+
+    const mockAssessment = this.getRiskAssessment();
+    const mockSignal = this.getTradingSignal();
+    const mockSnapshot: UnifiedSnapshot = {
+      snapshotVersion: '1.0.0',
+      sequence: 0,
+      timestamp: new Date().toISOString(),
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      positions: [],
+      candles: {},
+      riskAssessment: mockAssessment,
+      strategySignal: mockSignal,
+      dataQuality: this.state.bridgeStatus.dataQuality || {
+        lastTickAgeMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
+        serverTime: new Date().toISOString(),
+        localTime: new Date().toISOString(),
+        lastSuccessfulSync: new Date().toISOString(),
+        snapshotSequence: 0,
+        brokerServerTime: new Date().toISOString(),
+      },
+    };
+
+    return executionEngine.processExecution(mockSnapshot, this.state.isAgentActive);
+  }
+
+  public getRecentTelemetry(): TelemetryRecord[] {
+    return telemetryEngine.getRecentRecords();
+  }
+
+  public processHeartbeat(payload: any): { pendingOrders: TradeOrder[]; dataQuality?: DataQualityMetrics } {
+    return this.processSnapshot(payload);
+  }
+
+  public processSnapshot(payload: any): { pendingOrders: TradeOrder[]; dataQuality: DataQualityMetrics; strategySignal?: TradingSignal } {
+    const startTime = Date.now();
+    const now = new Date();
+
+    this.snapshotSequence++;
+
+    // 1. Extract Account Info
+    const acc = payload.account || payload.accountInfo || {};
+    const accountInfo: ExtendedAccountInfo = {
+      accountNumber: acc.accountNumber ?? this.state.bridgeStatus.accountInfo?.accountNumber ?? 9028145,
+      broker: acc.broker ?? this.state.bridgeStatus.accountInfo?.broker ?? '.Markets Ltd',
+      balance: acc.balance ?? this.state.bridgeStatus.accountInfo?.balance ?? 971.49,
+      equity: acc.equity ?? this.state.bridgeStatus.accountInfo?.equity ?? 971.49,
+      margin: acc.margin ?? this.state.bridgeStatus.accountInfo?.margin ?? 0,
+      freeMargin: acc.freeMargin ?? this.state.bridgeStatus.accountInfo?.freeMargin ?? 971.49,
+      marginLevel: acc.marginLevel ?? (acc.margin > 0 ? (acc.equity / acc.margin) * 100 : 0),
+      floatingProfit: acc.floatingProfit ?? (acc.equity - acc.balance),
+      dailyProfit: acc.dailyProfit ?? 0,
+      drawdown: acc.drawdown ?? 0,
+      usedMargin: acc.usedMargin ?? acc.margin ?? 0,
+      openPositionsCount: acc.openPositionsCount ?? (payload.positions ? payload.positions.length : (this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0)),
+      currency: acc.currency ?? 'USD',
+    };
+
+    // 2. Extract Market State
+    const symbol = payload.symbol || payload.market?.symbol || 'XAUUSD.m';
+    const ask = payload.ask ?? payload.market?.ask ?? this.state.lastTick?.ask ?? 4107.81;
+    const bid = payload.bid ?? payload.market?.bid ?? this.state.lastTick?.bid ?? 4106.50;
+    const spread = payload.spread ?? payload.market?.spread ?? Math.round((ask - bid) * 100) / 100;
+    const serverTimeStr = payload.serverTime || payload.market?.serverTime || now.toISOString();
+
+    const marketState: MarketState = {
+      symbol,
+      ask,
+      bid,
+      spread,
+      serverTime: serverTimeStr,
+      utcTime: now.toISOString(),
+      tradingSession: payload.market?.tradingSession || 'London/NewYork',
+      marketOpenStatus: payload.market?.marketOpenStatus ?? true,
+    };
+
+    // 3. Extract Symbol Specs
+    const spec = payload.symbolSpec || {};
+    const symbolSpec: SymbolSpecification = {
+      symbol,
+      digits: spec.digits ?? 2,
+      point: spec.point ?? 0.01,
+      tickSize: spec.tickSize ?? 0.01,
+      tickValue: spec.tickValue ?? 1.0,
+      contractSize: spec.contractSize ?? 100,
+      minLot: spec.minLot ?? 0.01,
+      maxLot: spec.maxLot ?? 100.0,
+      lotStep: spec.lotStep ?? 0.01,
+    };
+
+    // 4. Extract Positions & Candles
+    const positions: PositionInfo[] = Array.isArray(payload.positions) ? payload.positions : [];
+    const candles: TimeframeOHLCV = payload.candles || {};
+
+    // 5. Evaluate Data Quality
+    const lastTickAgeMs = Math.max(0, Date.now() - new Date(serverTimeStr).getTime());
+    const missingFields: string[] = [];
+    if (!payload.symbol && !payload.market?.symbol) missingFields.push('symbol');
+    if (payload.ask === undefined && payload.market?.ask === undefined) missingFields.push('ask');
+    if (payload.bid === undefined && payload.market?.bid === undefined) missingFields.push('bid');
+
+    const isDataComplete = missingFields.length === 0;
+    const latencyMs = Math.max(2, Date.now() - startTime);
+
+    const dataQuality: DataQualityMetrics = {
+      lastTickAgeMs: isNaN(lastTickAgeMs) ? 0 : lastTickAgeMs,
+      isConnected: true,
+      isDataComplete,
+      latencyMs,
+      serverTime: serverTimeStr,
+      localTime: now.toISOString(),
+      lastSuccessfulSync: now.toISOString(),
+      snapshotSequence: payload.sequence || this.snapshotSequence,
+      brokerServerTime: serverTimeStr,
+      missingFields: isDataComplete ? undefined : missingFields,
+    };
+
+    // 6. Compute Technical Indicators via Phase 2 Backend Indicator Engine
+    const indicators: MultiTimeframeIndicators = indicatorEngine.computeAllTimeframes(symbol, candles);
+
+    // 7. Temporary snapshot object for Risk Assessment evaluation
+    const tempSnapshot: UnifiedSnapshot = {
+      snapshotVersion: '1.0.0',
+      sequence: dataQuality.snapshotSequence,
+      timestamp: now.toISOString(),
+      account: accountInfo,
+      symbolSpec,
+      market: marketState,
+      positions,
+      candles,
+      indicators,
+      dataQuality,
+    };
+
+    // 8. Evaluate Risk Assessment via Phase 3 RiskEngine
+    const riskAssessment = riskEngine.evaluateRisk(tempSnapshot, this.state.riskRules);
+
+    // 9. Evaluate Strategy Signal via Phase 4 StrategyEngine
+    const strategySignal = strategyEngine.evaluateStrategy({
+      ...tempSnapshot,
+      riskAssessment,
+    });
+
+    // 10. Evaluate Execution Engine (Phase 6)
+    const executionResult = executionEngine.processExecution(tempSnapshot, this.state.isAgentActive);
+
+    // 11. Evaluate Telemetry & Audit Engine (Phase 7)
+    const telemetryRecord = telemetryEngine.recordTelemetry(tempSnapshot, executionResult);
+
+    // 12. Build final Unified Snapshot
+    const unifiedSnapshot: UnifiedSnapshot = {
+      ...tempSnapshot,
+      riskAssessment,
+      strategySignal,
+      executionResult,
+      telemetryRecord,
+    };
+
+    this.latestUnifiedSnapshot = unifiedSnapshot;
+    this.initialSyncCompleted = true;
+
+    // Update internal state
     this.state.bridgeStatus.isConnected = true;
     this.state.bridgeStatus.lastHeartbeat = now.toISOString();
-    this.state.bridgeStatus.latencyMs = Math.max(5, Date.now() - startTime);
+    this.state.bridgeStatus.latencyMs = latencyMs;
+    this.state.bridgeStatus.accountInfo = accountInfo;
+    this.state.bridgeStatus.dataQuality = dataQuality;
+    this.state.bridgeStatus.riskAssessment = riskAssessment;
+    this.state.bridgeStatus.strategySignal = strategySignal;
+    this.state.bridgeStatus.executionResult = executionResult;
+    this.state.bridgeStatus.telemetryRecord = telemetryRecord;
+    this.state.bridgeStatus.unifiedSnapshot = unifiedSnapshot;
+    this.state.bridgeStatus.initialSyncCompleted = true;
 
-    if (payload.account) {
-      this.state.bridgeStatus.accountInfo = {
-        ...this.state.bridgeStatus.accountInfo,
-        ...payload.account,
-      };
-    }
+    this.state.lastTick = {
+      symbol,
+      ask,
+      bid,
+      spread,
+      timestamp: now.toISOString(),
+    };
 
-    // 2. Update Tick Data
-    if (payload.symbol && payload.ask && payload.bid) {
-      const spread = payload.spread ?? Math.round((payload.ask - payload.bid) * 100) / 100;
-      this.state.lastTick = {
-        symbol: payload.symbol,
-        ask: payload.ask,
-        bid: payload.bid,
-        spread: spread,
-        timestamp: now.toISOString(),
-      };
-    }
+    // Autonomous trading check
+    this.runAutonomousScalpCheck();
 
-    // 3. Autonomous Scalping Loop Check
-    if (this.autonomousTrading.enabled) {
-      const elapsed = Date.now() - (this.autonomousTrading.startTime || Date.now());
-      const durationMs = this.autonomousTrading.durationHours * 3600 * 1000;
+    const ordersToExecute = this.state.pendingOrders.filter((o) => o.status === 'pending');
+    return { pendingOrders: ordersToExecute, dataQuality };
+  }
 
-      if (elapsed > durationMs) {
-        this.autonomousTrading.enabled = false;
-        this.logTradingActivity('ai_analysis', `[ترید خودکار هرمس] مهلت ${this.autonomousTrading.durationHours} ساعته معامله خودکار پایان یافت.`);
-      } else {
-        const hasPending = this.state.pendingOrders.some((o) => o.status === 'pending');
-        const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0;
-        const timeSinceLastOrder = Date.now() - (this.autonomousTrading.lastOrderTime || 0);
+  private runAutonomousScalpCheck(): void {
+    if (!this.autonomousTrading.enabled) return;
 
-        // Auto-dispatch a new low-risk scalp trade if flat and 30s elapsed
-        if (openPositions === 0 && !hasPending && timeSinceLastOrder > 30000) {
-          const ask = this.state.lastTick?.ask || 4107.81;
-          const sl = Number((ask - 2.50).toFixed(2));
-          const tp = Number((ask + 1.00).toFixed(2)); // $1.00 target profit for 0.01 lot scalping
+    const elapsed = Date.now() - (this.autonomousTrading.startTime || Date.now());
+    const durationMs = this.autonomousTrading.durationHours * 3600 * 1000;
 
-          const res = this.createOrder({
-            symbol: 'XAUUSD.m',
-            type: 'BUY',
-            lot: this.autonomousTrading.lotSize,
-            sl,
-            tp,
-            source: 'ai_agent',
-          });
+    if (elapsed > durationMs) {
+      this.autonomousTrading.enabled = false;
+      this.logTradingActivity('ai_analysis', `[ترید خودکار هرمس] مهلت ${this.autonomousTrading.durationHours} ساعته معامله خودکار پایان یافت.`);
+    } else {
+      const hasPending = this.state.pendingOrders.some((o) => o.status === 'pending');
+      const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0;
+      const timeSinceLastOrder = Date.now() - (this.autonomousTrading.lastOrderTime || 0);
 
-          if (res.success) {
-            this.autonomousTrading.lastOrderTime = Date.now();
-            this.logTradingActivity(
-              'ai_analysis',
-              `[اسکالپ خودکار ایجنت هرمس] سفارش جدید ثبت شد. (هدف سود: $1.00 دلار | حد ضرر: $2.50 دلار | لات: ${this.autonomousTrading.lotSize})`
-            );
-          }
+      if (openPositions === 0 && !hasPending && timeSinceLastOrder > 30000) {
+        const ask = this.state.lastTick?.ask || 4107.81;
+        const sl = Number((ask - 2.50).toFixed(2));
+        const tp = Number((ask + 1.00).toFixed(2));
+
+        const res = this.createOrder({
+          symbol: 'XAUUSD.m',
+          type: 'BUY',
+          lot: this.autonomousTrading.lotSize,
+          sl,
+          tp,
+          source: 'ai_agent',
+        });
+
+        if (res.success) {
+          this.autonomousTrading.lastOrderTime = Date.now();
+          this.logTradingActivity(
+            'ai_analysis',
+            `[اسکالپ خودکار ایجنت هرمس] سفارش جدید ثبت شد. (هدف سود: $1.00 دلار | حد ضرر: $2.50 دلار | لات: ${this.autonomousTrading.lotSize})`
+          );
         }
       }
     }
-
-    // 4. Collect & return pending orders to EA
-    const ordersToExecute = this.state.pendingOrders.filter((o) => o.status === 'pending');
-
-    return { pendingOrders: ordersToExecute };
   }
 
   public createOrder(orderInput: {
@@ -765,34 +1068,36 @@ class TradingEngine {
     sl?: number;
     tp?: number;
     source: 'ai_agent' | 'user_manual' | 'telegram';
+    clientOrderId?: string;
   }): { success: boolean; order?: TradeOrder; error?: string } {
-    // Risk rule checks
+    const clientOrderId = orderInput.clientOrderId || `cid_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    // Check Idempotency: Prevent duplicate execution if this order was already processed
+    if (this.processedClientOrderIds.has(clientOrderId)) {
+      const existingOrder =
+        this.state.pendingOrders.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId) ||
+        this.state.orderHistory.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId);
+      if (existingOrder) {
+        return { success: true, order: existingOrder };
+      }
+    }
+
+    // Phase 3 Risk Engine Pre-Execution Rule Checks
     if (orderInput.type === 'BUY' || orderInput.type === 'SELL') {
-      const maxLotRule = this.state.riskRules.find((r) => r.id === 'max_lot_size' && r.isEnabled);
-      if (maxLotRule && orderInput.lot > Number(maxLotRule.value)) {
-        const err = `خطای ریسک: حجم معامله (${orderInput.lot}) بیشتر از حداکثر مجاز (${maxLotRule.value} لات) است.`;
-        this.logTradingActivity('rule_check', err, { orderInput });
-        return { success: false, error: err };
-      }
-
-      const slRule = this.state.riskRules.find((r) => r.id === 'require_sl_tp' && r.isEnabled);
-      if (slRule && Number(slRule.value) === 1 && (!orderInput.sl || orderInput.sl <= 0)) {
-        const err = 'خطای ریسک: بر اساس قوانین استراتژی، تعیین حد ضرر (Stop-Loss) الزامی است.';
-        this.logTradingActivity('rule_check', err, { orderInput });
-        return { success: false, error: err };
-      }
-
-      const openPosRule = this.state.riskRules.find((r) => r.id === 'max_open_positions' && r.isEnabled);
-      const currentOpen = this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0;
-      if (openPosRule && currentOpen >= Number(openPosRule.value)) {
-        const err = `خطای ریسک: تعداد معاملات باز (${currentOpen}) به حداکثر مجاز (${openPosRule.value}) رسیده است.`;
-        this.logTradingActivity('rule_check', err, { orderInput });
+      const assessment = this.getRiskAssessment(orderInput);
+      if (!assessment.isAllowed) {
+        const primaryFailure = assessment.failedRules[0];
+        const err = `خطای موتور ریسک (Risk Engine): ${primaryFailure ? primaryFailure.reason : 'معامله با قوانین غیرقابل مذاکره ریسک مغایرت دارد.'}`;
+        this.logTradingActivity('rule_check', err, { orderInput, assessment });
         return { success: false, error: err };
       }
     }
 
+    this.processedClientOrderIds.add(clientOrderId);
+
     const newOrder: TradeOrder = {
       id: `ord_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      clientOrderId,
       symbol: orderInput.symbol,
       type: orderInput.type,
       lot: orderInput.lot,
@@ -807,7 +1112,7 @@ class TradingEngine {
     supabaseService.logOrder(newOrder).catch(() => {});
     this.logTradingActivity(
       'order_dispatched',
-      `سفارش جدید ${newOrder.type} روی نماد ${newOrder.symbol} (حجم: ${newOrder.lot}) صادر و در صف ارسال به MT5 قرار گرفت.`,
+      `سفارش جدید ${newOrder.type} روی نماد ${newOrder.symbol} (حجم: ${newOrder.lot}) با شناسه ${clientOrderId} صادر و در صف ارسال قرار گرفت.`,
       newOrder
     );
 

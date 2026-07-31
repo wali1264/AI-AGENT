@@ -144,10 +144,92 @@ async function startServer() {
     res.json(tradingEngine.getState());
   });
 
-  // Trading Agent API: MT5 Heartbeat & Tick
+  // Trading Agent API: Get Technical Indicators (Phase 2 Indicator Engine)
+  app.get('/api/trading/indicators', (req: Request, res: Response) => {
+    const timeframe = req.query.tf as any;
+    const indicators = tradingEngine.getIndicators(timeframe);
+    res.json({ status: 'ok', timeframe: timeframe || 'ALL', indicators });
+  });
+
+  // Trading Agent API: Get Risk Assessment & Pre-Execution Rule Engine Status (Phase 3 Risk Engine)
+  app.all('/api/trading/risk', (req: Request, res: Response) => {
+    const proposedOrder = req.body && Object.keys(req.body).length > 0 ? req.body : undefined;
+    const riskAssessment = tradingEngine.getRiskAssessment(proposedOrder);
+    res.json({ status: 'ok', riskAssessment });
+  });
+
+  // Trading Agent API: Get Multi-Timeframe Strategy Signals (Phase 4 Strategy Engine)
+  app.get('/api/trading/signals', (req: Request, res: Response) => {
+    const signal = tradingEngine.getTradingSignal();
+    res.json({ status: 'ok', signal });
+  });
+
+  // Trading Agent API: Get Gemini AI Analysis & Reasoning (Phase 5 Gemini AI Engine)
+  app.all('/api/trading/ai-analysis', async (req: Request, res: Response) => {
+    try {
+      const aiAnalysis = await tradingEngine.getAIAnalysis();
+      res.json({ status: 'ok', aiAnalysis });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  // Trading Agent API: Automated Execution & Order Routing Engine (Phase 6 Execution Engine)
+  app.all('/api/trading/execution', (req: Request, res: Response) => {
+    try {
+      const executionResult = tradingEngine.getExecutionResult();
+      res.json({ status: 'ok', executionResult });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  // Trading Agent API: Real-Time Telemetry & Audit Trail Dispatcher (Phase 7 Telemetry Engine)
+  app.all('/api/trading/telemetry', (req: Request, res: Response) => {
+    try {
+      const records = tradingEngine.getRecentTelemetry();
+      res.json({
+        status: 'ok',
+        count: records.length,
+        telemetry: records,
+        latestRecord: records[0] || null,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/trading/analyze', async (req: Request, res: Response) => {
+    try {
+      const signal = tradingEngine.getTradingSignal();
+      const state = tradingEngine.getState();
+      const riskAssessment = tradingEngine.getRiskAssessment();
+      const aiAnalysis = await tradingEngine.getAIAnalysis();
+      const executionResult = tradingEngine.getExecutionResult();
+      res.json({
+        status: 'ok',
+        signal,
+        riskAssessment,
+        aiAnalysis,
+        executionResult,
+        market: state.lastTick,
+        analyzedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  // Trading Agent API: MT5 Heartbeat & Tick & Unified Snapshot
   app.post('/api/trading/tick', (req: Request, res: Response) => {
     const result = tradingEngine.processHeartbeat(req.body || {});
-    res.json({ status: 'ok', pendingOrders: result.pendingOrders });
+    res.json({ status: 'ok', pendingOrders: result.pendingOrders, dataQuality: result.dataQuality });
+  });
+
+  app.post('/api/trading/snapshot', (req: Request, res: Response) => {
+    const result = tradingEngine.processSnapshot(req.body || {});
+    res.json({ status: 'ok', pendingOrders: result.pendingOrders, dataQuality: result.dataQuality });
   });
 
   // Trading Agent API: Create New Order

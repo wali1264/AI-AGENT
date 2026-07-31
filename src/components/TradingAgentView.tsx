@@ -61,70 +61,164 @@ export const TradingAgentView: React.FC<TradingAgentViewProps> = () => {
 //+------------------------------------------------------------------+
 #property copyright "Hermes Cloud Router Agent"
 #property link      "${origin}"
-#property version   "1.00"
-#property description "ربات سفیر متاتریدر ۵ جهت ارتباط آنی با مغز ایجنت و روتر هرمس"
+#property version   "2.00"
+#property description "ربات سفیر پیشرفته متاتریدر ۵ (نسخه ۲.۰۰) - پشتیبانی از Unified Snapshot، مدیریت حد ضرر/سود، Breakeven و Trailing Stop"
 
 #include <Trade\\Trade.mqh>
 CTrade trade;
 
 //--- Input Parameters
-input string   InpServerUrl     = "${origin}/api/trading/tick"; // آدرس API سفیر
+input string   InpServerUrl     = "${origin}/api/trading/tick"; // آدرس API سفیر و دریافت پپ‌لاین
 input string   InpSecretToken   = "hermes-agent-token-2026";      // کلید امنیتی احراز هویت
-input int      InpCheckInterval = 2;                             // فاصله زمانی چک کردن (ثانیه)
-input string   InpDefaultSymbol = "XAUUSD";                       // نماد پیش‌فرض معامله
+input int      InpCheckInterval = 2;                             // فاصله زمانی سنکرون‌سازی (ثانیه)
+input string   InpDefaultSymbol = "XAUUSD.m";                     // نماد پیش‌فرض معامله
+input ulong    InpMagicNumber   = 77077;                          // شناسه مجیک نامبر اختصاصی ربات
 
-//--- Global Variables
+//--- Global Variables & Idempotency Buffer
 datetime g_lastCheckTime = 0;
+long     g_sequenceCounter = 0;
+string   g_executedOrders[];
 
 int OnInit()
 {
    EventSetTimer(InpCheckInterval);
-   Print("[Hermes Bridge] EA Started. Server Target: ", InpServerUrl);
+   trade.SetExpertMagicNumber(InpMagicNumber);
+   Print("[Hermes Bridge v2.0] Ambassador EA Started. Target Server: ", InpServerUrl);
    return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   Print("[Hermes Bridge] EA Stopped.");
+   Print("[Hermes Bridge v2.0] Ambassador EA Stopped.");
 }
 
 void OnTimer()
 {
-   SendHeartbeatAndPollOrders();
+   SendUnifiedSnapshotAndPoll();
 }
 
 void OnTick()
 {
    if(TimeCurrent() - g_lastCheckTime >= InpCheckInterval)
    {
-      SendHeartbeatAndPollOrders();
+      SendUnifiedSnapshotAndPoll();
    }
 }
 
-void SendHeartbeatAndPollOrders()
+// Check if order was already processed locally
+bool IsOrderAlreadyExecuted(string orderId)
+{
+   int total = ArraySize(g_executedOrders);
+   for(int i = 0; i < total; i++)
+   {
+      if(g_executedOrders[i] == orderId) return true;
+   }
+   return false;
+}
+
+void RegisterExecutedOrder(string orderId)
+{
+   int size = ArraySize(g_executedOrders);
+   ArrayResize(g_executedOrders, size + 1);
+   g_executedOrders[size] = orderId;
+}
+
+// Build M1/M5 Candle Data Array JSON
+string GetCandlesJson(string symbol, ENUM_TIMEFRAMES tf, int count)
+{
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   int copied = CopyRates(symbol, tf, 0, count, rates);
+   if(copied <= 0) return "[]";
+
+   string json = "[";
+   for(int i = copied - 1; i >= 0; i--)
+   {
+      string barStr = StringFormat(
+         "{\\"time\\":\\"%s\\",\\"open\\":%.5f,\\"high\\":%.5f,\\"low\\":%.5f,\\"close\\":%.5f,\\"tickVolume\\":%d}",
+         TimeToString(rates[i].time, TIME_DATE|TIME_SECONDS),
+         rates[i].open, rates[i].high, rates[i].low, rates[i].close, rates[i].tick_volume
+      );
+      json += barStr + (i > 0 ? "," : "");
+   }
+   json += "]";
+   return json;
+}
+
+// Main Heartbeat & Unified Snapshot Pipeline
+void SendUnifiedSnapshotAndPoll()
 {
    g_lastCheckTime = TimeCurrent();
+   g_sequenceCounter++;
 
    string symbol = _Symbol;
-   if(symbol == "") symbol = InpDefaultSymbol;
+   if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
 
+   // 1. Market Data
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
    double spread = (double)SymbolInfoInteger(symbol, SYMBOL_SPREAD);
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+   double contractSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
 
+   // 2. Account Information
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double margin = AccountInfoDouble(ACCOUNT_MARGIN);
    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   double marginLevel = margin > 0 ? (equity / margin) * 100.0 : 0.0;
    long accNum = AccountInfoInteger(ACCOUNT_LOGIN);
    string company = AccountInfoString(ACCOUNT_COMPANY);
-   int openPosCount = PositionsTotal();
+   string currency = AccountInfoString(ACCOUNT_CURRENCY);
+   long leverage = AccountInfoInteger(ACCOUNT_LEVERAGE);
 
+   // 3. Complete Active Positions Array Construction
+   string positionsJson = "[";
+   int openPosCount = PositionsTotal();
+   for(int i = 0; i < openPosCount; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && PositionSelectByTicket(ticket))
+      {
+         string posSymbol = PositionGetString(POSITION_SYMBOL);
+         long posType = PositionGetInteger(POSITION_TYPE);
+         string posDir = (posType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+         double posVol = PositionGetDouble(POSITION_VOLUME);
+         double posEntry = PositionGetDouble(POSITION_PRICE_OPEN);
+         double posSL = PositionGetDouble(POSITION_SL);
+         double posTP = PositionGetDouble(POSITION_TP);
+         double posProfit = PositionGetDouble(POSITION_PROFIT);
+         double posSwap = PositionGetDouble(POSITION_SWAP);
+         ulong posMagic = PositionGetInteger(POSITION_MAGIC);
+         string posComment = PositionGetString(POSITION_COMMENT);
+
+         string posItem = StringFormat(
+            "{\\"ticket\\":%d,\\"symbol\\":\\"%s\\",\\"type\\":\\"%s\\",\\"direction\\":\\"%s\\",\\"lot\\":%.2f,\\"entryPrice\\":%.5f,\\"sl\\":%.5f,\\"tp\\":%.5f,\\"profit\\":%.2f,\\"swap\\":%.2f,\\"magic\\":%d,\\"comment\\":\\"%s\\"}",
+            ticket, posSymbol, posDir, posDir, posVol, posEntry, posSL, posTP, posProfit, posSwap, posMagic, posComment
+         );
+         positionsJson += posItem + (i < openPosCount - 1 ? "," : "");
+      }
+   }
+   positionsJson += "]";
+
+   // 4. M1 Bar Data Collection
+   string m1CandlesJson = GetCandlesJson(symbol, PERIOD_M1, 25);
+
+   // 5. Build Unified Snapshot Payload
    string jsonPayload = StringFormat(
-      "{\\"symbol\\":\\"%s\\",\\"ask\\":%.5f,\\"bid\\":%.5f,\\"spread\\":%.2f," +
-      "\\"account\\":{\\"accountNumber\\":%d,\\"broker\\":\\"%s\\",\\"balance\\":%.2f,\\"equity\\":%.2f,\\"margin\\":%.2f,\\"freeMargin\\":%.2f,\\"openPositionsCount\\":%d}}"
-      , symbol, ask, bid, spread, accNum, company, balance, equity, margin, freeMargin, openPosCount
+      "{\\"snapshotVersion\\":\\"2.0.0\\",\\"sequence\\":%d,\\"symbol\\":\\"%s\\",\\"ask\\":%.5f,\\"bid\\":%.5f,\\"spread\\":%.2f," +
+      "\\"account\\":{\\"accountNumber\\":%d,\\"broker\\":\\"%s\\",\\"currency\\":\\"%s\\",\\"leverage\\":%d,\\"balance\\":%.2f,\\"equity\\":%.2f,\\"margin\\":%.2f,\\"freeMargin\\":%.2f,\\"marginLevel\\":%.2f,\\"openPositionsCount\\":%d}," +
+      "\\"symbolSpec\\":{\\"symbol\\":\\"%s\\",\\"digits\\":%d,\\"point\\":%.5f,\\"tickSize\\":%.5f,\\"tickValue\\":%.2f,\\"contractSize\\":%.2f,\\"minLot\\":%.2f,\\"maxLot\\":%.2f,\\"lotStep\\":%.2f}," +
+      "\\"positions\\":%s,\\"candles\\":{\\"M1\\":%s}}"
+      , g_sequenceCounter, symbol, ask, bid, spread, accNum, company, currency, leverage, balance, equity, margin, freeMargin, marginLevel, openPosCount,
+      symbol, digits, point, tickSize, tickValue, contractSize, minLot, maxLot, lotStep, positionsJson, m1CandlesJson
    );
 
    char postData[];
@@ -140,48 +234,115 @@ void SendHeartbeatAndPollOrders()
    if(res == 200)
    {
       string responseJson = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
-      ParseAndExecuteOrders(responseJson);
+      ParseAndDispatchActions(responseJson);
    }
    else if(res == -1)
    {
-      Print("[Hermes Bridge ERROR] WebRequest failed. Error Code: ", GetLastError());
+      Print("[Hermes Bridge ERROR] WebRequest failed. Code: ", GetLastError());
    }
 }
 
-void ParseAndExecuteOrders(string jsonStr)
+// Parser & Execution Router for Orders and Modifications
+void ParseAndDispatchActions(string jsonStr)
 {
-   if(StringFind(jsonStr, "\\"pendingOrders\\":") < 0) return;
-
-   int pos = StringFind(jsonStr, "\\"id\\":\\"", 0);
-   while(pos >= 0)
+   // A. Process Pending Orders (New Trade Entries / Close All)
+   if(StringFind(jsonStr, "\\"pendingOrders\\":") >= 0)
    {
-      int startId = pos + 6;
-      int endId = StringFind(jsonStr, "\\"", startId);
-      string orderId = StringSubstr(jsonStr, startId, endId - startId);
-
-      int typePos = StringFind(jsonStr, "\\"type\\":\\"", endId);
-      int startType = typePos + 8;
-      int endType = StringFind(jsonStr, "\\"", startType);
-      string orderType = StringSubstr(jsonStr, startType, endType - startType);
-
-      int lotPos = StringFind(jsonStr, "\\"lot\\":", endType);
-      double lot = 0.01;
-      if(lotPos > 0)
+      int pos = StringFind(jsonStr, "\\"id\\":\\"", 0);
+      while(pos >= 0)
       {
-         int endLot = StringFind(jsonStr, ",", lotPos);
-         if(endLot < 0) endLot = StringFind(jsonStr, "}", lotPos);
-         lot = StringToDouble(StringSubstr(jsonStr, lotPos + 6, endLot - (lotPos + 6)));
-      }
+         int startId = pos + 6;
+         int endId = StringFind(jsonStr, "\\"", startId);
+         string orderId = StringSubstr(jsonStr, startId, endId - startId);
 
-      ExecuteSingleOrder(orderId, orderType, lot);
-      pos = StringFind(jsonStr, "\\"id\\":\\"", endType);
+         if(!IsOrderAlreadyExecuted(orderId))
+         {
+            int typePos = StringFind(jsonStr, "\\"type\\":\\"", endId);
+            int startType = typePos + 8;
+            int endType = StringFind(jsonStr, "\\"", startType);
+            string orderType = StringSubstr(jsonStr, startType, endType - startType);
+
+            // Parse Lot
+            double lot = 0.01;
+            int lotPos = StringFind(jsonStr, "\\"lot\\":", endType);
+            if(lotPos > 0)
+            {
+               int endLot = StringFind(jsonStr, ",", lotPos);
+               if(endLot < 0) endLot = StringFind(jsonStr, "}", lotPos);
+               lot = StringToDouble(StringSubstr(jsonStr, lotPos + 6, endLot - (lotPos + 6)));
+            }
+
+            // Parse Stop Loss (SL)
+            double sl = 0.0;
+            int slPos = StringFind(jsonStr, "\\"sl\\":", endType);
+            if(slPos > 0)
+            {
+               int endSl = StringFind(jsonStr, ",", slPos);
+               if(endSl < 0) endSl = StringFind(jsonStr, "}", slPos);
+               sl = StringToDouble(StringSubstr(jsonStr, slPos + 5, endSl - (slPos + 5)));
+            }
+
+            // Parse Take Profit (TP)
+            double tp = 0.0;
+            int tpPos = StringFind(jsonStr, "\\"tp\\":", endType);
+            if(tpPos > 0)
+            {
+               int endTp = StringFind(jsonStr, ",", tpPos);
+               if(endTp < 0) endTp = StringFind(jsonStr, "}", tpPos);
+               tp = StringToDouble(StringSubstr(jsonStr, tpPos + 5, endTp - (tpPos + 5)));
+            }
+
+            ExecuteSingleOrder(orderId, orderType, lot, sl, tp);
+            RegisterExecutedOrder(orderId);
+         }
+         pos = StringFind(jsonStr, "\\"id\\":\\"", pos + 10);
+      }
+   }
+
+   // B. Process Position Modifications (Breakeven & Dynamic Trailing Stops)
+   if(StringFind(jsonStr, "\\"modifications\\":") >= 0)
+   {
+      int modPos = StringFind(jsonStr, "\\"ticket\\":", 0);
+      while(modPos >= 0)
+      {
+         int startTicket = modPos + 9;
+         int endTicket = StringFind(jsonStr, ",", startTicket);
+         ulong ticket = (ulong)StringToInteger(StringSubstr(jsonStr, startTicket, endTicket - startTicket));
+
+         double newSL = 0.0;
+         int slPos = StringFind(jsonStr, "\\"newSL\\":", endTicket);
+         if(slPos > 0)
+         {
+            int endSl = StringFind(jsonStr, ",", slPos);
+            if(endSl < 0) endSl = StringFind(jsonStr, "}", slPos);
+            newSL = StringToDouble(StringSubstr(jsonStr, slPos + 8, endSl - (slPos + 8)));
+         }
+
+         double newTP = 0.0;
+         int tpPos = StringFind(jsonStr, "\\"newTP\\":", endTicket);
+         if(tpPos > 0)
+         {
+            int endTp = StringFind(jsonStr, ",", tpPos);
+            if(endTp < 0) endTp = StringFind(jsonStr, "}", tpPos);
+            newTP = StringToDouble(StringSubstr(jsonStr, tpPos + 8, endTp - (tpPos + 8)));
+         }
+
+         if(ticket > 0 && newSL > 0)
+         {
+            bool modSuccess = trade.PositionModify(ticket, newSL, newTP);
+            PrintFormat("[Hermes Protection] PositionModify Ticket #%d -> NewSL: %.2f | Success: %s", ticket, newSL, modSuccess ? "TRUE" : "FALSE");
+         }
+
+         modPos = StringFind(jsonStr, "\\"ticket\\":", modPos + 10);
+      }
    }
 }
 
-void ExecuteSingleOrder(string orderId, string typeStr, double lot)
+// Executes Trade Orders with SL/TP Enforced
+void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, double tp)
 {
    string symbol = _Symbol;
-   if(symbol == "") symbol = InpDefaultSymbol;
+   if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
 
    bool success = false;
    double price = 0;
@@ -190,12 +351,12 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot)
    if(typeStr == "BUY")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      success = trade.Buy(lot, symbol, price, 0, 0, "Hermes Order " + orderId);
+      success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
    else if(typeStr == "SELL")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
-      success = trade.Sell(lot, symbol, price, 0, 0, "Hermes Order " + orderId);
+      success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
    else if(typeStr == "CLOSE_ALL")
    {
@@ -211,6 +372,11 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot)
    if(!success && typeStr != "CLOSE_ALL")
    {
       errorMsg = StringFormat("CTrade Error %d: %s", trade.ResultRetcode(), trade.ResultComment());
+      PrintFormat("[Hermes Order Failed] ID: %s | %s", orderId, errorMsg);
+   }
+   else
+   {
+      PrintFormat("[Hermes Order Success] ID: %s | Type: %s | Lot: %.2f | Price: %.2f | SL: %.2f | TP: %.2f", orderId, typeStr, lot, price, sl, tp);
    }
 
    SendOrderResult(orderId, success ? "executed" : "failed", price, errorMsg);

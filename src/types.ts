@@ -98,6 +98,7 @@ export interface ServerState {
 
 export interface TradeOrder {
   id: string;
+  clientOrderId?: string;
   symbol: string;
   type: 'BUY' | 'SELL' | 'CLOSE' | 'CLOSE_ALL';
   lot: number;
@@ -119,20 +120,258 @@ export interface TickData {
   timestamp: string;
 }
 
+export interface OHLCVBar {
+  time: number; // UNIX timestamp (sec) or ISO
+  timeISO?: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  tickVolume: number;
+}
+
+export type TimeframeType = 'M1' | 'M5' | 'M15' | 'H1' | 'H4' | 'D1';
+
+export type TimeframeOHLCV = {
+  [key in TimeframeType]?: OHLCVBar[];
+};
+
+export interface SymbolSpecification {
+  symbol: string;
+  digits: number;
+  point: number;
+  tickSize: number;
+  tickValue: number;
+  contractSize: number;
+  minLot: number;
+  maxLot: number;
+  lotStep: number;
+}
+
+export interface PositionInfo {
+  ticket: number;
+  symbol: string;
+  direction: 'BUY' | 'SELL';
+  lot: number;
+  entryPrice: number;
+  sl: number;
+  tp: number;
+  currentProfit: number;
+  swap: number;
+  commission: number;
+  magicNumber: number;
+  openTime: string;
+}
+
+export interface ExtendedAccountInfo {
+  accountNumber?: number;
+  broker?: string;
+  balance?: number;
+  equity?: number;
+  margin?: number;
+  freeMargin?: number;
+  marginLevel?: number;
+  floatingProfit?: number;
+  dailyProfit?: number;
+  drawdown?: number;
+  usedMargin?: number;
+  openPositionsCount?: number;
+  currency?: string;
+}
+
+export interface MarketState {
+  symbol: string;
+  ask: number;
+  bid: number;
+  spread: number;
+  serverTime: string;
+  utcTime: string;
+  tradingSession?: string;
+  marketOpenStatus?: boolean;
+}
+
+export interface DataQualityMetrics {
+  lastTickAgeMs: number;
+  isConnected: boolean;
+  isDataComplete: boolean;
+  latencyMs: number;
+  serverTime: string;
+  localTime: string;
+  lastSuccessfulSync: string;
+  snapshotSequence: number;
+  brokerServerTime: string;
+  missingFields?: string[];
+}
+
+export interface ADXResult {
+  adx: number;
+  plusDI: number;
+  minusDI: number;
+}
+
+export interface MACDResult {
+  macd: number;
+  signal: number;
+  histogram: number;
+}
+
+export interface BollingerBandsResult {
+  upper: number;
+  middle: number;
+  lower: number;
+  bandwidth: number;
+}
+
+export interface IndicatorValues {
+  ema20: number;
+  ema50: number;
+  ema100: number;
+  ema200: number;
+  rsi14: number;
+  atr14: number;
+  adx14: ADXResult;
+  macd: MACDResult;
+  bollingerBands: BollingerBandsResult;
+  trendSignal: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  calculatedAt: string;
+}
+
+export type MultiTimeframeIndicators = {
+  [key in TimeframeType]?: IndicatorValues;
+};
+
+export interface RiskFailedRule {
+  ruleId: string;
+  name: string;
+  reason: string;
+  threshold?: number | string;
+  actual?: number | string;
+}
+
+export interface RiskAssessmentResult {
+  isAllowed: boolean;
+  riskScore: number; // 0 (Extremely Low Risk) to 100 (Extreme Risk / Unsafe)
+  passedRules: string[];
+  failedRules: RiskFailedRule[];
+  maxAllowedLot: number;
+  recommendation: 'PROCEED' | 'REJECT' | 'REDUCE_SIZE';
+  evaluatedAt: string;
+}
+
+export interface TradingSignal {
+  id: string;
+  symbol: string;
+  action: 'BUY' | 'SELL' | 'HOLD';
+  timeframe: TimeframeType;
+  entryPrice: number;
+  sl: number;
+  tp: number;
+  lot: number;
+  confidenceScore: number; // 0 to 100%
+  riskRewardRatio: number;
+  confluenceReasons: string[];
+  htfTrend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  ltfSetup: 'OVERBOUGHT' | 'OVERSOLD' | 'BREAKOUT' | 'RANGING' | 'NEUTRAL';
+  aiReasoning?: string;
+  generatedAt: string;
+}
+
+export interface GeminiAIAnalysis {
+  decision: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE_ALL';
+  confidence: number; // 0 to 100%
+  marketBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  persianAnalysis: string;
+  englishAnalysis: string;
+  keyObservations: string[];
+  suggestedAction: string;
+  evaluatedAt: string;
+  modelUsed: string;
+}
+
+export interface PositionModificationRequest {
+  ticket: number;
+  symbol: string;
+  action: 'UPDATE_SL_TP' | 'BREAKEVEN' | 'PARTIAL_CLOSE' | 'CLOSE';
+  newSL?: number;
+  newTP?: number;
+  closeLot?: number;
+  reason: string;
+}
+
+export interface TrailingStopConfig {
+  enableBreakeven: boolean;
+  breakevenProfitDistance: number; // Points or price distance (e.g., 1.50 for Gold)
+  enableTrailingStop: boolean;
+  trailingStep: number; // Distance behind price (e.g., 1.20 for Gold)
+  minTrailActivationProfit: number; // Minimum profit before trailing starts
+}
+
+export interface ExecutionEngineResult {
+  actionExecuted: boolean;
+  ordersToDispatch: TradeOrder[];
+  modificationsToDispatch: PositionModificationRequest[];
+  executionSummaryPersian: string;
+  logs: string[];
+  timestamp: string;
+}
+
+export interface TelemetryRecord {
+  id: string;
+  timestamp: string;
+  sequenceNumber: number;
+  latencyMs: number;
+  riskScore: number;
+  riskAllowed: boolean;
+  strategySignalAction: string;
+  confidenceScore: number;
+  aiDecision: string;
+  ordersDispatchedCount: number;
+  modificationsCount: number;
+  persianNotificationText: string;
+  englishNotificationText: string;
+  status: 'OPTIMAL' | 'WARNING' | 'ALERT' | 'CRITICAL';
+}
+
+export interface NotificationPayload {
+  title: string;
+  persianMessage: string;
+  englishMessage: string;
+  level: 'INFO' | 'WARNING' | 'ALERT' | 'SUCCESS';
+  timestamp: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface UnifiedSnapshot {
+  snapshotVersion: string; // e.g., '1.0.0'
+  sequence: number;
+  timestamp: string;
+  account: ExtendedAccountInfo;
+  symbolSpec: SymbolSpecification;
+  market: MarketState;
+  positions: PositionInfo[];
+  candles: TimeframeOHLCV;
+  indicators?: MultiTimeframeIndicators;
+  riskAssessment?: RiskAssessmentResult;
+  strategySignal?: TradingSignal;
+  aiAnalysis?: GeminiAIAnalysis;
+  executionResult?: ExecutionEngineResult;
+  telemetryRecord?: TelemetryRecord;
+  dataQuality: DataQualityMetrics;
+}
+
 export interface EABridgeStatus {
   isConnected: boolean;
   lastHeartbeat: string | null;
   latencyMs: number;
-  accountInfo?: {
-    accountNumber?: number;
-    broker?: string;
-    balance?: number;
-    equity?: number;
-    margin?: number;
-    freeMargin?: number;
-    openPositionsCount?: number;
-    currency?: string;
-  };
+  accountInfo?: ExtendedAccountInfo;
+  dataQuality?: DataQualityMetrics;
+  riskAssessment?: RiskAssessmentResult;
+  strategySignal?: TradingSignal;
+  aiAnalysis?: GeminiAIAnalysis;
+  executionResult?: ExecutionEngineResult;
+  telemetryRecord?: TelemetryRecord;
+  unifiedSnapshot?: UnifiedSnapshot | null;
+  initialSyncCompleted?: boolean;
 }
 
 export interface RiskRule {
