@@ -142,8 +142,8 @@ class TradingEngine {
     lotSize: number;
     lastOrderTime: number | null;
   } = {
-    enabled: true,
-    startTime: Date.now(),
+    enabled: false,
+    startTime: null,
     durationHours: 8,
     strategy: 'scalping',
     targetProfitUSD: 1.0,
