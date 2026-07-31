@@ -62,7 +62,7 @@ export const TradingAgentView: React.FC<TradingAgentViewProps> = () => {
 #property copyright "Hermes Cloud Router Agent"
 #property link      "${origin}"
 #property version   "2.00"
-#property description "ربات سفیر پیشرفته متاتریدر ۵ (نسخه ۲.۰۰) - پشتیبانی از Unified Snapshot، مدیریت حد ضرر/سود، Breakeven و Trailing Stop"
+#property description "ربات سفیر پیشرفته متاتریدر ۵ (نسخه ۲.۰۰) - پشتیبانی از Persistent Idempotency، Multi-Timeframe Candles و Mandatory SL Guard"
 
 #include <Trade\\Trade.mqh>
 CTrade trade;
@@ -73,16 +73,20 @@ input string   InpSecretToken   = "hermes-agent-token-2026";      // کلید ا
 input int      InpCheckInterval = 2;                             // فاصله زمانی سنکرون‌سازی (ثانیه)
 input string   InpDefaultSymbol = "XAUUSD.m";                     // نماد پیش‌فرض معامله
 input ulong    InpMagicNumber   = 77077;                          // شناسه مجیک نامبر اختصاصی ربات
+input bool     InpEnforceSL     = true;                           // اجبار داشتن حد ضرر (Mandatory Stop Loss Guard)
 
-//--- Global Variables & Idempotency Buffer
+//--- Global Variables & Tracker
 datetime g_lastCheckTime = 0;
 long     g_sequenceCounter = 0;
-string   g_executedOrders[];
 
 int OnInit()
 {
    EventSetTimer(InpCheckInterval);
    trade.SetExpertMagicNumber(InpMagicNumber);
+   if(GlobalVariableCheck("Hermes_Seq_Counter"))
+   {
+      g_sequenceCounter = (long)GlobalVariableGet("Hermes_Seq_Counter");
+   }
    Print("[Hermes Bridge v2.0] Ambassador EA Started. Target Server: ", InpServerUrl);
    return(INIT_SUCCEEDED);
 }
@@ -106,25 +110,20 @@ void OnTick()
    }
 }
 
-// Check if order was already processed locally
+// Check if order was already processed locally using MT5 Persistent GlobalVariables
 bool IsOrderAlreadyExecuted(string orderId)
 {
-   int total = ArraySize(g_executedOrders);
-   for(int i = 0; i < total; i++)
-   {
-      if(g_executedOrders[i] == orderId) return true;
-   }
-   return false;
+   string varName = "Hermes_Ord_" + orderId;
+   return GlobalVariableCheck(varName);
 }
 
 void RegisterExecutedOrder(string orderId)
 {
-   int size = ArraySize(g_executedOrders);
-   ArrayResize(g_executedOrders, size + 1);
-   g_executedOrders[size] = orderId;
+   string varName = "Hermes_Ord_" + orderId;
+   GlobalVariableSet(varName, (double)TimeCurrent());
 }
 
-// Build M1/M5 Candle Data Array JSON
+// Build Candle Data Array JSON
 string GetCandlesJson(string symbol, ENUM_TIMEFRAMES tf, int count)
 {
    MqlRates rates[];
@@ -151,6 +150,7 @@ void SendUnifiedSnapshotAndPoll()
 {
    g_lastCheckTime = TimeCurrent();
    g_sequenceCounter++;
+   GlobalVariableSet("Hermes_Seq_Counter", (double)g_sequenceCounter);
 
    string symbol = _Symbol;
    if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
@@ -208,17 +208,21 @@ void SendUnifiedSnapshotAndPoll()
    }
    positionsJson += "]";
 
-   // 4. M1 Bar Data Collection
-   string m1CandlesJson = GetCandlesJson(symbol, PERIOD_M1, 25);
+   // 4. Multi-Timeframe Bar Data Collection (M1, M5, M15, H1)
+   string m1CandlesJson  = GetCandlesJson(symbol, PERIOD_M1, 20);
+   string m5CandlesJson  = GetCandlesJson(symbol, PERIOD_M5, 15);
+   string m15CandlesJson = GetCandlesJson(symbol, PERIOD_M15, 10);
+   string h1CandlesJson  = GetCandlesJson(symbol, PERIOD_H1, 5);
 
    // 5. Build Unified Snapshot Payload
    string jsonPayload = StringFormat(
       "{\\"snapshotVersion\\":\\"2.0.0\\",\\"sequence\\":%d,\\"symbol\\":\\"%s\\",\\"ask\\":%.5f,\\"bid\\":%.5f,\\"spread\\":%.2f," +
       "\\"account\\":{\\"accountNumber\\":%d,\\"broker\\":\\"%s\\",\\"currency\\":\\"%s\\",\\"leverage\\":%d,\\"balance\\":%.2f,\\"equity\\":%.2f,\\"margin\\":%.2f,\\"freeMargin\\":%.2f,\\"marginLevel\\":%.2f,\\"openPositionsCount\\":%d}," +
       "\\"symbolSpec\\":{\\"symbol\\":\\"%s\\",\\"digits\\":%d,\\"point\\":%.5f,\\"tickSize\\":%.5f,\\"tickValue\\":%.2f,\\"contractSize\\":%.2f,\\"minLot\\":%.2f,\\"maxLot\\":%.2f,\\"lotStep\\":%.2f}," +
-      "\\"positions\\":%s,\\"candles\\":{\\"M1\\":%s}}"
+      "\\"positions\\":%s,\\"candles\\":{\\"M1\\":%s,\\"M5\\":%s,\\"M15\\":%s,\\"H1\\":%s}}"
       , g_sequenceCounter, symbol, ask, bid, spread, accNum, company, currency, leverage, balance, equity, margin, freeMargin, marginLevel, openPosCount,
-      symbol, digits, point, tickSize, tickValue, contractSize, minLot, maxLot, lotStep, positionsJson, m1CandlesJson
+      symbol, digits, point, tickSize, tickValue, contractSize, minLot, maxLot, lotStep, positionsJson,
+      m1CandlesJson, m5CandlesJson, m15CandlesJson, h1CandlesJson
    );
 
    char postData[];
@@ -236,9 +240,9 @@ void SendUnifiedSnapshotAndPoll()
       string responseJson = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
       ParseAndDispatchActions(responseJson);
    }
-   else if(res == -1)
+   else
    {
-      Print("[Hermes Bridge ERROR] WebRequest failed. Code: ", GetLastError());
+      PrintFormat("[Hermes Bridge ERROR] WebRequest HTTP status: %d | Last Error: %d", res, GetLastError());
    }
 }
 
@@ -293,7 +297,6 @@ void ParseAndDispatchActions(string jsonStr)
             }
 
             ExecuteSingleOrder(orderId, orderType, lot, sl, tp);
-            RegisterExecutedOrder(orderId);
          }
          pos = StringFind(jsonStr, "\\"id\\":\\"", pos + 10);
       }
@@ -327,10 +330,28 @@ void ParseAndDispatchActions(string jsonStr)
             newTP = StringToDouble(StringSubstr(jsonStr, tpPos + 8, endTp - (tpPos + 8)));
          }
 
-         if(ticket > 0 && newSL > 0)
+         if(ticket > 0 && PositionSelectByTicket(ticket))
          {
-            bool modSuccess = trade.PositionModify(ticket, newSL, newTP);
-            PrintFormat("[Hermes Protection] PositionModify Ticket #%d -> NewSL: %.2f | Success: %s", ticket, newSL, modSuccess ? "TRUE" : "FALSE");
+            string posSymbol = PositionGetString(POSITION_SYMBOL);
+            long posType = PositionGetInteger(POSITION_TYPE);
+            double currentPrice = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(posSymbol, SYMBOL_ASK) : SymbolInfoDouble(posSymbol, SYMBOL_BID);
+
+            bool slValid = true;
+            if(newSL > 0.0)
+            {
+               if(posType == POSITION_TYPE_BUY && newSL >= currentPrice) slValid = false;
+               if(posType == POSITION_TYPE_SELL && newSL <= currentPrice) slValid = false;
+            }
+
+            if(!slValid)
+            {
+               PrintFormat("[Hermes Guard Violation] Invalid PositionModify Ticket #%d: newSL (%.5f) violates directional rule against current price (%.5f).", ticket, newSL, currentPrice);
+            }
+            else
+            {
+               bool modSuccess = trade.PositionModify(ticket, newSL, newTP);
+               PrintFormat("[Hermes Protection] PositionModify Ticket #%d -> NewSL: %.5f | NewTP: %.5f | Success: %s", ticket, newSL, newTP, modSuccess ? "TRUE" : "FALSE");
+            }
          }
 
          modPos = StringFind(jsonStr, "\\"ticket\\":", modPos + 10);
@@ -338,7 +359,7 @@ void ParseAndDispatchActions(string jsonStr)
    }
 }
 
-// Executes Trade Orders with SL/TP Enforced
+// Executes Trade Orders with Mandatory SL Enforced, Directional SL Guard & Magic Number Filter
 void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, double tp)
 {
    string symbol = _Symbol;
@@ -348,25 +369,87 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    double price = 0;
    string errorMsg = "";
 
+   // 1. Lot Size Broker Limits Guard
+   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   if((typeStr == "BUY" || typeStr == "SELL") && (lot < minLot || lot > maxLot))
+   {
+      errorMsg = StringFormat("Order Rejected: Requested lot (%.2f) outside broker limits [Min: %.2f, Max: %.2f].", lot, minLot, maxLot);
+      PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
+      SendOrderResult(orderId, "failed", 0, errorMsg);
+      RegisterExecutedOrder(orderId);
+      return;
+   }
+
+   // 2. Mandatory Stop Loss Guard Enforcement
+   if(InpEnforceSL && (typeStr == "BUY" || typeStr == "SELL") && sl <= 0.0)
+   {
+      errorMsg = "Order Rejected: Mandatory Stop Loss (InpEnforceSL) requirement violated (SL is 0).";
+      PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
+      SendOrderResult(orderId, "failed", 0, errorMsg);
+      RegisterExecutedOrder(orderId);
+      return;
+   }
+
    if(typeStr == "BUY")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+      // 3. Directional SL Validation Guard for BUY (SL must be below Ask)
+      if(sl > 0.0 && sl >= price)
+      {
+         errorMsg = StringFormat("Order Rejected: BUY Stop Loss (%.5f) must be strictly below Ask price (%.5f).", sl, price);
+         PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
+         SendOrderResult(orderId, "failed", 0, errorMsg);
+         RegisterExecutedOrder(orderId);
+         return;
+      }
       success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
    else if(typeStr == "SELL")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
+      // 3. Directional SL Validation Guard for SELL (SL must be above Bid)
+      if(sl > 0.0 && sl <= price)
+      {
+         errorMsg = StringFormat("Order Rejected: SELL Stop Loss (%.5f) must be strictly above Bid price (%.5f).", sl, price);
+         PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
+         SendOrderResult(orderId, "failed", 0, errorMsg);
+         RegisterExecutedOrder(orderId);
+         return;
+      }
       success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
    else if(typeStr == "CLOSE_ALL")
    {
+      int attemptedCount = 0;
+      int closedCount = 0;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
          ulong ticket = PositionGetTicket(i);
-         trade.PositionClose(ticket);
+         if(ticket > 0 && PositionSelectByTicket(ticket))
+         {
+            if(PositionGetInteger(POSITION_MAGIC) == (long)InpMagicNumber)
+            {
+               attemptedCount++;
+               if(trade.PositionClose(ticket))
+               {
+                  closedCount++;
+               }
+            }
+         }
       }
-      success = true;
+      success = (attemptedCount == 0 || closedCount == attemptedCount);
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
+      if(!success)
+      {
+         errorMsg = StringFormat("CloseAll incomplete: %d of %d positions closed. CTrade Error %d: %s", closedCount, attemptedCount, trade.ResultRetcode(), trade.ResultComment());
+         PrintFormat("[Hermes CloseAll Failed] %s", errorMsg);
+      }
+      else
+      {
+         PrintFormat("[Hermes CloseAll Success] Closed %d positions matching Magic #%d", closedCount, InpMagicNumber);
+         RegisterExecutedOrder(orderId);
+      }
    }
 
    if(!success && typeStr != "CLOSE_ALL")
@@ -377,6 +460,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    else
    {
       PrintFormat("[Hermes Order Success] ID: %s | Type: %s | Lot: %.2f | Price: %.2f | SL: %.2f | TP: %.2f", orderId, typeStr, lot, price, sl, tp);
+      RegisterExecutedOrder(orderId);
    }
 
    SendOrderResult(orderId, success ? "executed" : "failed", price, errorMsg);
@@ -384,7 +468,26 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
 
 void SendOrderResult(string orderId, string status, double price, string errorMsg)
 {
-   string resultUrl = StringFormat("%s/api/trading/order-result", "${origin}");
+   string resultUrl = InpServerUrl;
+   int tickPos = StringFind(resultUrl, "/api/trading/tick");
+   if(tickPos >= 0)
+   {
+      resultUrl = StringSubstr(resultUrl, 0, tickPos) + "/api/trading/order-result";
+   }
+   else
+   {
+      int apiPos = StringFind(resultUrl, "/api/");
+      if(apiPos >= 0)
+      {
+         resultUrl = StringSubstr(resultUrl, 0, apiPos) + "api/trading/order-result";
+      }
+      else
+      {
+         PrintFormat("[Hermes Bridge ERROR] Unable to construct order-result URL from InpServerUrl: '%s'. Notification skipped.", InpServerUrl);
+         return;
+      }
+   }
+
    string jsonPayload = StringFormat(
       "{\\"orderId\\":\\"%s\\",\\"status\\":\\"%s\\",\\"executionPrice\\":%.5f,\\"error\\":\\"%s\\"}",
       orderId, status, price, errorMsg
