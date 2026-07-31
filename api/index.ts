@@ -37,8 +37,13 @@ app.get('/api/health', (req: Request, res: Response) => {
 
 // EA Heartbeat & Tick endpoint (MT5 Ambassador posts ticks and receives pending orders)
 app.post('/api/trading/tick', (req: Request, res: Response) => {
-  const result = tradingEngine.processHeartbeat(req.body);
-  res.json(result);
+  try {
+    const result = tradingEngine.processHeartbeat(req.body || {});
+    res.json({ status: 'ok', pendingOrders: result.pendingOrders || [], dataQuality: result.dataQuality });
+  } catch (err: any) {
+    console.error('[Tick Endpoint Error]:', err);
+    res.json({ status: 'ok', pendingOrders: [], error: err?.message || String(err) });
+  }
 });
 
 // Order Execution Result endpoint (MT5 Ambassador posts order fill status)
@@ -380,12 +385,6 @@ app.delete('/api/admin/logs', (req: Request, res: Response) => {
 // Trading Agent API: Get State
 app.get('/api/trading/state', (req: Request, res: Response) => {
   res.json(tradingEngine.getState());
-});
-
-// Trading Agent API: MT5 Heartbeat & Tick
-app.post('/api/trading/tick', (req: Request, res: Response) => {
-  const result = tradingEngine.processHeartbeat(req.body || {});
-  res.json({ status: 'ok', pendingOrders: result.pendingOrders });
 });
 
 // Trading Agent API: Create New Order

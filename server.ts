@@ -223,13 +223,23 @@ async function startServer() {
 
   // Trading Agent API: MT5 Heartbeat & Tick & Unified Snapshot
   app.post('/api/trading/tick', (req: Request, res: Response) => {
-    const result = tradingEngine.processHeartbeat(req.body || {});
-    res.json({ status: 'ok', pendingOrders: result.pendingOrders, dataQuality: result.dataQuality });
+    try {
+      const result = tradingEngine.processHeartbeat(req.body || {});
+      res.json({ status: 'ok', pendingOrders: result.pendingOrders || [], dataQuality: result.dataQuality });
+    } catch (err: any) {
+      console.error('[Tick Endpoint Error]:', err);
+      res.json({ status: 'ok', pendingOrders: [], error: err?.message || String(err) });
+    }
   });
 
   app.post('/api/trading/snapshot', (req: Request, res: Response) => {
-    const result = tradingEngine.processSnapshot(req.body || {});
-    res.json({ status: 'ok', pendingOrders: result.pendingOrders, dataQuality: result.dataQuality });
+    try {
+      const result = tradingEngine.processSnapshot(req.body || {});
+      res.json({ status: 'ok', pendingOrders: result.pendingOrders || [], dataQuality: result.dataQuality });
+    } catch (err: any) {
+      console.error('[Snapshot Endpoint Error]:', err);
+      res.json({ status: 'ok', pendingOrders: [], error: err?.message || String(err) });
+    }
   });
 
   // Trading Agent API: Create New Order

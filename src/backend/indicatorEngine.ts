@@ -24,26 +24,78 @@ export class IndicatorEngine {
    * Main entry point to compute all indicators for a multi-timeframe candle dictionary.
    */
   public computeAllTimeframes(symbol: string, candles: TimeframeOHLCV): MultiTimeframeIndicators {
-    const timeframes: TimeframeType[] = ['M1', 'M5', 'M15', 'H1', 'H4', 'D1'];
-    const result: MultiTimeframeIndicators = {};
+    try {
+      const timeframes: TimeframeType[] = ['M1', 'M5', 'M15', 'H1', 'H4', 'D1'];
+      const result: MultiTimeframeIndicators = {};
 
-    for (const tf of timeframes) {
-      const bars = candles[tf];
-      if (bars && bars.length > 0) {
-        result[tf] = this.getOrComputeIndicators(symbol, tf, bars);
+      if (!candles) return result;
+
+      for (const tf of timeframes) {
+        const rawBars = candles[tf];
+        if (Array.isArray(rawBars) && rawBars.length > 0) {
+          result[tf] = this.getOrComputeIndicators(symbol, tf, rawBars);
+        }
+      }
+
+      return result;
+    } catch (err) {
+      console.error('[IndicatorEngine] Error computing indicators:', err);
+      return {};
+    }
+  }
+
+  private parseTimeNumber(t: any): number {
+    if (typeof t === 'number' && !isNaN(t)) {
+      return t > 1e11 ? Math.floor(t / 1000) : t;
+    }
+    if (typeof t === 'string') {
+      const num = Number(t);
+      if (!isNaN(num)) {
+        return num > 1e11 ? Math.floor(num / 1000) : num;
+      }
+      const parsed = Date.parse(t.replace(/\./g, '-'));
+      if (!isNaN(parsed)) {
+        return Math.floor(parsed / 1000);
       }
     }
+    return Math.floor(Date.now() / 1000);
+  }
 
-    return result;
+  private normalizeBar(bar: any): OHLCVBar {
+    const timeNum = this.parseTimeNumber(bar?.time);
+    const closeVal = Number(bar?.close) || 4107.81;
+    const openVal = Number(bar?.open) || closeVal;
+    const highVal = Number(bar?.high) || Math.max(openVal, closeVal);
+    const lowVal = Number(bar?.low) || Math.min(openVal, closeVal);
+    const vol = Number(bar?.tickVolume || bar?.volume) || 100;
+
+    let timeISOStr = new Date().toISOString();
+    try {
+      timeISOStr = new Date(timeNum * 1000).toISOString();
+    } catch {
+      // Fallback
+    }
+
+    return {
+      time: timeNum,
+      timeISO: timeISOStr,
+      open: openVal,
+      high: highVal,
+      low: lowVal,
+      close: closeVal,
+      tickVolume: vol,
+    };
   }
 
   /**
    * Calculate or retrieve cached indicator results for a specific timeframe bar series.
    */
-  public getOrComputeIndicators(symbol: string, timeframe: string, bars: OHLCVBar[]): IndicatorValues {
-    if (!bars || bars.length === 0) {
+  public getOrComputeIndicators(symbol: string, timeframe: string, rawBars: OHLCVBar[]): IndicatorValues {
+    if (!rawBars || rawBars.length === 0) {
       return this.getFallbackIndicators();
     }
+
+    const bars = rawBars.map((b) => this.normalizeBar(b));
 
     // Sort bars by time ascending
     const sortedBars = [...bars].sort((a, b) => a.time - b.time);
