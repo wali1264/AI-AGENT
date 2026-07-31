@@ -207,13 +207,24 @@ export const supabaseService = {
     const sb = getSupabase();
     if (!sb) return null;
     try {
-      const { data, error } = await sb.from('agent_chat_messages').select('*').order('timestamp', { ascending: true }).limit(100);
+      let data: any[] | null = null;
+      let error: any = null;
+
+      const res1 = await sb.from('agent_chat_messages').select('*').order('timestamp', { ascending: true }).limit(100);
+      if (!res1.error && res1.data) {
+        data = res1.data;
+      } else {
+        const res2 = await sb.from('agent_chat_messages').select('*').order('created_at', { ascending: true }).limit(100);
+        data = res2.data;
+        error = res2.error;
+      }
+
       if (error || !data) return null;
       return data.map((msg: any) => ({
-        id: msg.id,
-        sender: msg.sender,
-        text: msg.text,
-        timestamp: msg.timestamp,
+        id: msg.id || `chat_${Date.now()}_${Math.random()}`,
+        sender: msg.sender || 'agent',
+        text: msg.text || '',
+        timestamp: msg.timestamp || msg.created_at || new Date().toISOString(),
       }));
     } catch (err) {
       console.error('Supabase fetchChatMessages error:', err);
@@ -225,13 +236,24 @@ export const supabaseService = {
     const sb = getSupabase();
     if (!sb) return false;
     try {
-      const { error } = await sb.from('agent_chat_messages').insert({
+      const payload: any = {
         id: msg.id,
         sender: msg.sender,
         text: msg.text,
         timestamp: msg.timestamp,
-      });
-      return !error;
+        created_at: msg.timestamp,
+      };
+      const { error } = await sb.from('agent_chat_messages').upsert(payload);
+      if (error) {
+        const { error: err2 } = await sb.from('agent_chat_messages').upsert({
+          id: msg.id,
+          sender: msg.sender,
+          text: msg.text,
+          timestamp: msg.timestamp,
+        });
+        return !err2;
+      }
+      return true;
     } catch (err) {
       console.error('Supabase saveChatMessage error:', err);
       return false;

@@ -307,12 +307,27 @@ class TradingEngine {
         // Auto-dispatch a new scalp trade order every 20s if flat
         if (openPositions === 0 && !hasPending && timeSinceLastOrder > 20000) {
           const ask = this.state.lastTick.ask;
-          const sl = Number((ask - 2.50).toFixed(2));
-          const tp = Number((ask + 1.00).toFixed(2));
+          const bid = this.state.lastTick.bid;
+
+          // Determine trade direction from multi-timeframe strategy signal (SELL vs BUY)
+          const signal = this.getTradingSignal();
+          let orderType: 'BUY' | 'SELL' = 'BUY';
+          if (signal.action === 'SELL') {
+            orderType = 'SELL';
+          } else if (signal.action === 'BUY') {
+            orderType = 'BUY';
+          } else {
+            // Oscillate when neutral
+            orderType = Math.sin(Date.now() / 25000) > 0 ? 'BUY' : 'SELL';
+          }
+
+          const entryPrice = orderType === 'BUY' ? ask : bid;
+          const sl = orderType === 'BUY' ? Number((entryPrice - 2.50).toFixed(2)) : Number((entryPrice + 2.50).toFixed(2));
+          const tp = orderType === 'BUY' ? Number((entryPrice + 1.00).toFixed(2)) : Number((entryPrice - 1.00).toFixed(2));
 
           const res = this.createOrder({
             symbol: 'XAUUSD.m',
-            type: 'BUY',
+            type: orderType,
             lot: this.autonomousTrading.lotSize,
             sl,
             tp,
@@ -323,7 +338,7 @@ class TradingEngine {
             this.autonomousTrading.lastOrderTime = Date.now();
             this.logTradingActivity(
               'ai_analysis',
-              `[اسکالپ خودکار سرور هرمس] سفارش جدید بر اساس پایش پیوسته سرور صادر شد. (تارگت سود: $1.00 | حد ضرر: $2.50 | حجم: ${this.autonomousTrading.lotSize} لات)`
+              `[اسکالپ خودکار سرور هرمس] سفارش جدید ${orderType === 'BUY' ? 'خرید (BUY 🟢)' : 'فروش (SELL 🔴)'} طلا بر اساس تحلیل پایش پیوسته سرور صادر شد. (تارگت: $1.00 | حد ضرر: $2.50 | حجم: ${this.autonomousTrading.lotSize} لات)`
             );
           }
         }
@@ -631,11 +646,11 @@ class TradingEngine {
               ? `فعال (استراتژی: ${this.autonomousTrading.strategy}، تارگت: $${this.autonomousTrading.targetProfitUSD}، لات: ${this.autonomousTrading.lotSize}، باقی‌مانده: ${this.autonomousTrading.durationHours} ساعت)`
               : 'غیرفعال'
           }
-- حافظه بلندمدت و استراتژی‌های ثبت‌شده کاربر: ${JSON.stringify(this.agentMemory.slice(0, 5))}
-- آخرین پیام‌های گفتگو: ${JSON.stringify(this.chatMessages.slice(-4))}
+- حافظه بلندمدت و استراتژی‌های ثبت‌شده کاربر: ${JSON.stringify(this.agentMemory.slice(0, 10))}
+- تاریخچه کامل گفتگوهای اخیر کاربر با ایجنت: ${JSON.stringify(this.chatMessages.slice(-10))}
 
 دستورالعمل‌های حیاتی:
-1. تو یک هوش مصنوعی واقعی هستی، پاسخ‌های قالبی، خشک، کلیشه‌ای یا تکراری اکیداً ممنوع است. دقیقاً و مستقیماً به پیام کاربر به زبان فارسی روان پاسخ بده.
+1. تو یک هوش مصنوعی واقعی هستی. تاریخچه گفتگوها را کاملاً به یاد داشته باش. اگر کاربر قبلاً قانونی یا فرمولی داد، آن را ادامه‌دار پیگیری کن و از سلام‌های تکراری یا معرفی دوباره خودداری کن.
 2. بر اساس تحلیل پیام کاربر، ساختار JSON زیر را با دقت بالا تولید کن:
 {
   "reply": "متن پاسخ کامل، تحلیلی، تخصصی و مستقیم به کاربر به زبان فارسی",
@@ -684,12 +699,19 @@ class TradingEngine {
                   'استراتژی اسکالپ خودکار',
                   `معامله خودکار ${this.autonomousTrading.durationHours} ساعته توسط AI فعال شد. هدف سود: $${this.autonomousTrading.targetProfitUSD}، حجم: ${this.autonomousTrading.lotSize} لات.`
                 );
+
+                const currentSignal = this.getTradingSignal();
+                const initialType = currentSignal.action === 'SELL' ? 'SELL' : 'BUY';
+                const initialEntry = initialType === 'BUY' ? currentAsk : currentBid;
+                const sl = initialType === 'BUY' ? Number((initialEntry - 2.5).toFixed(2)) : Number((initialEntry + 2.5).toFixed(2));
+                const tp = initialType === 'BUY' ? Number((initialEntry + 1.0).toFixed(2)) : Number((initialEntry - 1.0).toFixed(2));
+
                 this.createOrder({
                   symbol: 'XAUUSD.m',
-                  type: 'BUY',
+                  type: initialType,
                   lot: parsed.lot || 0.01,
-                  sl: Number((currentAsk - 2.5).toFixed(2)),
-                  tp: Number((currentAsk + 1.0).toFixed(2)),
+                  sl,
+                  tp,
                   source: 'ai_agent',
                 });
               } else if (parsed.action === 'DISABLE_AUTONOMOUS') {

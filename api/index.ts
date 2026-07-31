@@ -504,6 +504,13 @@ app.get('/api/trading/memory', (req: Request, res: Response) => {
   });
 });
 
+app.get('/api/trading/chat-history', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    messages: tradingEngine.getChatMessages(),
+  });
+});
+
 app.post('/api/trading/memory', async (req: Request, res: Response) => {
   const { category, content } = req.body || {};
   if (!content) {

@@ -675,6 +675,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [newRuleUnit, setNewRuleUnit] = useState<RiskRule['unit']>('percentage');
 
   // Chat, Memory & System Prompt state
+  const chatEndRef = React.useRef<HTMLDivElement>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([
     {
@@ -688,6 +689,11 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [memoryCat, setMemoryCat] = useState('قوانین کاربری');
   const [memoryContent, setMemoryContent] = useState('');
+
+  // Auto-scroll chat to bottom whenever chatMessages update
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   // 8-Stage Autonomous Engine state
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -746,12 +752,10 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         const data = await res.json();
         if (data.memory) setAgentMemory(data.memory);
         if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
-          setChatMessages((prev) => {
-            const map = new Map<string, any>();
-            prev.forEach((m) => map.set(m.id, m));
-            data.messages.forEach((m: any) => map.set(m.id, m));
-            return Array.from(map.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-          });
+          const sorted = [...data.messages].sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+          setChatMessages(sorted);
         }
       }
     } catch (err) {
@@ -2600,20 +2604,24 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         <div className="space-y-6">
           {/* Section 1: Chat with Agent */}
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-3 border-gray-100">
               <div className="space-y-1">
                 <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
                   <Bot className="w-4 h-4 text-indigo-600" />
-                  <span>گفتگوی مستقیم و ارسال دستور به ایجنت معامله‌گر (حافظه زنده Supabase)</span>
+                  <span>گفتگوی مستقیم و ارسال دستور به ایجنت معامله‌گر</span>
                 </h2>
                 <p className="text-xs text-gray-500">
-                  می‌توانید به زبان فارسی روان دستور دهید (مثلاً: «دارم از پای سیستم می‌رم، برای معاملات بالای ۰.۱ لات تلگرام پیام بده» یا «خرید ۰.۰۱ لات بگذار»).
+                  می‌توانید به زبان فارسی روان دستور دهید (مثلاً: «برای معاملات بالای ۰.۱ لات تلگرام پیام بده» یا «معامله فروش طلا باز کن»).
                 </p>
               </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 self-start sm:self-auto shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>ذخیره‌سازی زنده در Supabase</span>
+              </span>
             </div>
 
             {/* Chat Messages Container */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 h-[280px] overflow-y-auto space-y-3 dir-rtl">
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 h-[460px] md:h-[520px] overflow-y-auto space-y-4 dir-rtl shadow-inner">
               {chatMessages.length > 0 ? (
                 chatMessages.map((msg) => (
                   <div
@@ -2623,23 +2631,23 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                     }`}
                   >
                     <div
-                      className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed font-sans ${
+                      className={`max-w-[88%] sm:max-w-[78%] p-3.5 rounded-2xl text-xs sm:text-sm leading-relaxed font-sans shadow-sm ${
                         msg.sender === 'user'
-                          ? 'bg-blue-600 text-white rounded-br-none shadow-sm'
-                          : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none shadow-sm'
+                          ? 'bg-blue-600 text-white rounded-tl-sm'
+                          : 'bg-white border border-slate-200 text-slate-800 rounded-tr-sm'
                       }`}
                     >
-                      <div className="flex items-center gap-1.5 mb-1 font-bold text-[10px] opacity-80">
+                      <div className="flex items-center justify-between gap-3 mb-1.5 font-bold text-[10px] sm:text-[11px] opacity-85 border-b border-white/20 pb-1">
                         {msg.sender === 'user' ? (
-                          <span>شما (کاربر)</span>
+                          <span className="text-blue-100">کاربر</span>
                         ) : (
-                          <span className="flex items-center gap-1 text-indigo-600">
-                            <Bot className="w-3 h-3" />
-                            <span>ایجنت هرمس</span>
+                          <span className="flex items-center gap-1 text-indigo-600 font-bold">
+                            <Bot className="w-3.5 h-3.5" />
+                            <span>ربات هوشمند هرمس</span>
                           </span>
                         )}
-                        <span className="font-mono text-[9px]">
-                          ({new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })})
+                        <span className="font-mono text-[9px] opacity-80">
+                          {new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
                       <p className="whitespace-pre-wrap">{msg.text}</p>
@@ -2647,10 +2655,11 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                   </div>
                 ))
               ) : (
-                <div className="h-full flex items-center justify-center text-xs text-gray-400">
-                  هنوز پیامی رد و بدل نشده است. پیامی بنویسید...
+                <div className="h-full flex items-center justify-center text-xs text-slate-400 font-sans">
+                  در حال بارگذاری تاریخچه مکالمات از حافظه Supabase...
                 </div>
               )}
+              <div ref={chatEndRef} />
             </div>
 
             {/* Chat Input Form */}
