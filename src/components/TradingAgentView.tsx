@@ -675,7 +675,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [newRuleUnit, setNewRuleUnit] = useState<RiskRule['unit']>('percentage');
 
   // Chat, Memory & System Prompt state
-  const chatEndRef = React.useRef<HTMLDivElement>(null);
+  const chatMessagesBoxRef = React.useRef<HTMLDivElement>(null);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([
     {
@@ -690,9 +690,11 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [memoryCat, setMemoryCat] = useState('قوانین کاربری');
   const [memoryContent, setMemoryContent] = useState('');
 
-  // Auto-scroll chat to bottom whenever chatMessages update
+  // Scroll ONLY the inner chat container to bottom on message updates (without moving main window scrollbar)
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatMessagesBoxRef.current) {
+      chatMessagesBoxRef.current.scrollTop = chatMessagesBoxRef.current.scrollHeight;
+    }
   }, [chatMessages]);
 
   // 8-Stage Autonomous Engine state
@@ -2621,7 +2623,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
             </div>
 
             {/* Chat Messages Container */}
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 h-[460px] md:h-[520px] overflow-y-auto space-y-4 dir-rtl shadow-inner">
+            <div ref={chatMessagesBoxRef} className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 h-[460px] md:h-[520px] overflow-y-auto space-y-4 dir-rtl shadow-inner">
               {chatMessages.length > 0 ? (
                 chatMessages.map((msg) => (
                   <div
@@ -2659,7 +2661,6 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                   در حال بارگذاری تاریخچه مکالمات از حافظه Supabase...
                 </div>
               )}
-              <div ref={chatEndRef} />
             </div>
 
             {/* Chat Input Form */}
