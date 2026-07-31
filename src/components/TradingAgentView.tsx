@@ -524,7 +524,10 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   const fetchRiskRules = async () => {
     try {
-      const res = await fetch('/api/trading/risk-rules');
+      let res = await fetch('/api/trading/risk-rules');
+      if (!res.ok) {
+        res = await fetch('/api/trading/rules');
+      }
       if (res.ok) {
         const data = await res.json();
         if (data.rules && Array.isArray(data.rules)) {
@@ -539,21 +542,32 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const handleSaveRiskRules = async (updatedRules?: RiskRule[]) => {
     const targetRules = updatedRules || riskRules;
     setIsSavingRisk(true);
+    setRiskSaveMsg(null);
     try {
-      const res = await fetch('/api/trading/risk-rules', {
+      let res = await fetch('/api/trading/risk-rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rules: targetRules }),
       });
+      if (!res.ok) {
+        res = await fetch('/api/trading/rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rules: targetRules }),
+        });
+      }
       if (res.ok) {
         const data = await res.json();
         if (data.rules) setRiskRules(data.rules);
-        setRiskSaveMsg('تنظیمات و پارامترهای موتور ریسک با موفقیت ذخیره و اعمال شد.');
-        setTimeout(() => setRiskSaveMsg(null), 3000);
+        setRiskSaveMsg('تنظیمات و پارامترهای موتور ریسک با موفقیت در دیتابیس Supabase و حافظه سرور ذخیره و فعال شد.');
+        setTimeout(() => setRiskSaveMsg(null), 4000);
         fetchTradingState();
+      } else {
+        setRiskSaveMsg('خطا در ذخیره‌سازی قوانین ریسک. لطفاً مجدداً تلاش کنید.');
       }
     } catch (err) {
       console.error('Failed to save risk rules:', err);
+      setRiskSaveMsg('خطای ارتباط شبکه در ذخیره‌سازی قوانین ریسک.');
     } finally {
       setIsSavingRisk(false);
     }

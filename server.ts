@@ -163,7 +163,21 @@ async function startServer() {
     res.json({ status: 'ok', rules: tradingEngine.getRiskRules() });
   });
 
+  app.get('/api/trading/rules', (req: Request, res: Response) => {
+    res.json({ status: 'ok', rules: tradingEngine.getRiskRules() });
+  });
+
   app.post('/api/trading/risk-rules', (req: Request, res: Response) => {
+    const { rules } = req.body || {};
+    if (!Array.isArray(rules)) {
+      res.status(400).json({ error: 'آرایه قوانین ریسک (rules) ارسالی نامعتبر است.' });
+      return;
+    }
+    const updated = tradingEngine.updateRiskRules(rules);
+    res.json({ status: 'ok', rules: updated });
+  });
+
+  app.post('/api/trading/rules', (req: Request, res: Response) => {
     const { rules } = req.body || {};
     if (!Array.isArray(rules)) {
       res.status(400).json({ error: 'آرایه قوانین ریسک (rules) ارسالی نامعتبر است.' });

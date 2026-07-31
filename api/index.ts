@@ -435,6 +435,35 @@ app.post('/api/trading/system-prompt', (req: Request, res: Response) => {
   res.json({ success: true, message: 'سیستم پرامپت ایجنت با موفقیت بروزرسانی شد.' });
 });
 
+// Trading Agent API: Dynamic Risk Engine Customization & Personalization
+app.get('/api/trading/risk-rules', (req: Request, res: Response) => {
+  res.json({ status: 'ok', rules: tradingEngine.getRiskRules() });
+});
+
+app.get('/api/trading/rules', (req: Request, res: Response) => {
+  res.json({ status: 'ok', rules: tradingEngine.getRiskRules() });
+});
+
+app.post('/api/trading/risk-rules', (req: Request, res: Response) => {
+  const { rules } = req.body || {};
+  if (!Array.isArray(rules)) {
+    res.status(400).json({ error: 'آرایه قوانین ریسک (rules) ارسالی نامعتبر است.' });
+    return;
+  }
+  const updated = tradingEngine.updateRiskRules(rules);
+  res.json({ status: 'ok', rules: updated });
+});
+
+app.post('/api/trading/rules', (req: Request, res: Response) => {
+  const { rules } = req.body || {};
+  if (!Array.isArray(rules)) {
+    res.status(400).json({ error: 'آرایه قوانین ریسک (rules) ارسالی نامعتبر است.' });
+    return;
+  }
+  const updated = tradingEngine.updateRiskRules(rules);
+  res.json({ status: 'ok', rules: updated });
+});
+
 app.post('/api/trading/autonomous-analyze', (req: Request, res: Response) => {
   const analysis = tradingEngine.runAutonomousAnalysis();
   res.json({ success: true, analysis });
