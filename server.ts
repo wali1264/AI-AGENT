@@ -229,6 +229,75 @@ async function startServer() {
     }
   });
 
+  // Phase 2: Multi-Account Management API Endpoints
+  app.get('/api/multi-accounts', (req: Request, res: Response) => {
+    try {
+      const accounts = tradingEngine.getAccountsList();
+      const activeAccountId = tradingEngine.getActiveAccountId();
+      res.json({ status: 'ok', activeAccountId, accounts });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/multi-accounts', (req: Request, res: Response) => {
+    try {
+      const { accountId, accountNumber, broker, name, strategyType } = req.body || {};
+      if (!accountId) {
+        res.status(400).json({ error: 'شناسه حساب (accountId) الزامی است.' });
+        return;
+      }
+      const state = tradingEngine.getOrCreateAccountState(accountId, accountNumber, broker, name, strategyType);
+      res.json({ status: 'ok', account: state.config });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/multi-accounts/select', (req: Request, res: Response) => {
+    try {
+      const { accountId } = req.body || {};
+      if (!accountId) {
+        res.status(400).json({ error: 'شناسه حساب (accountId) الزامی است.' });
+        return;
+      }
+      tradingEngine.switchActiveAccount(accountId);
+      res.json({ status: 'ok', activeAccountId: tradingEngine.getActiveAccountId() });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.get('/api/multi-accounts/:accountId/state', (req: Request, res: Response) => {
+    try {
+      const accState = tradingEngine.getAccountState(req.params.accountId);
+      res.json({ status: 'ok', state: accState });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  // Phase 2: Trade Journal API Endpoints
+  app.get('/api/trade-journal', (req: Request, res: Response) => {
+    try {
+      const accountId = req.query.accountId as string | undefined;
+      const journal = tradingEngine.getTradeJournalEntries(accountId);
+      res.json({ status: 'ok', journal });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/trade-journal/add', async (req: Request, res: Response) => {
+    try {
+      const accountId = req.body?.accountId as string | undefined;
+      const entry = await tradingEngine.addTradeJournalEntry(req.body || {}, accountId);
+      res.json({ status: 'ok', entry });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
   app.post('/api/trading/analyze', async (req: Request, res: Response) => {
     try {
       const signal = tradingEngine.getTradingSignal();
@@ -360,56 +429,109 @@ async function startServer() {
     });
   });
 
-  // Trading Agent API: Memory & Instructions
+  // Trading Agent API: Memory & Instructions (Multi-Account Isolated)
   app.get('/api/trading/memory', (req: Request, res: Response) => {
+    const accountId = req.query.accountId as string | undefined;
     res.json({
-      memory: tradingEngine.getMemory(),
+      memory: tradingEngine.getMemory(accountId),
       messages: tradingEngine.getChatMessages(),
     });
   });
 
   app.post('/api/trading/memory', async (req: Request, res: Response) => {
-    const { category, content } = req.body || {};
+    const { category, content, accountId } = req.body || {};
     if (!content) {
       res.status(400).json({ error: 'متن دستورالعمل یا آموزه الزامی است.' });
       return;
     }
-    const note = await tradingEngine.addMemoryNote(category || 'دستور کاربری', content);
+    const note = await tradingEngine.addMemoryNote(category || 'دستور کاربری', content, accountId);
     res.json({ success: true, note });
   });
 
   app.delete('/api/trading/memory/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
-    await tradingEngine.deleteMemoryNote(id);
+    const accountId = req.query.accountId as string | undefined;
+    await tradingEngine.deleteMemoryNote(id, accountId);
     res.json({ success: true });
   });
 
   // Trading Agent API: Interactive Chat
   app.post('/api/trading/chat', async (req: Request, res: Response) => {
-    const { text } = req.body || {};
+    const { text, accountId } = req.body || {};
     if (!text) {
       res.status(400).json({ error: 'متن پیام الزامی است.' });
       return;
     }
-    const result = await tradingEngine.processAgentChat(text);
+    const result = await tradingEngine.processAgentChat(text, accountId);
     res.json({ success: true, ...result });
+  });
+
+  // Trading Agent API: Knowledge Layer (Danesh Experimental Rules)
+  app.get('/api/trading/knowledge', async (req: Request, res: Response) => {
+    const accountId = req.query.accountId as string | undefined;
+    const rules = await tradingEngine.getKnowledgeRules(accountId);
+    res.json({ success: true, knowledgeRules: rules });
+  });
+
+  app.post('/api/trading/knowledge', async (req: Request, res: Response) => {
+    const rule = req.body;
+    if (!rule || !rule.title || !rule.descriptionPersian) {
+      res.status(400).json({ error: 'اطلاعات قانون دانش کامل نیست.' });
+      return;
+    }
+    const success = await tradingEngine.saveKnowledgeRule(rule);
+    res.json({ success });
+  });
+
+  app.post('/api/trading/knowledge/toggle', async (req: Request, res: Response) => {
+    const { id, isEnabled } = req.body || {};
+    if (!id) {
+      res.status(400).json({ error: 'شناسه قانون دانش مشخص نیست.' });
+      return;
+    }
+    const success = await tradingEngine.toggleKnowledgeRule(id, !!isEnabled);
+    res.json({ success });
+  });
+
+  app.delete('/api/trading/knowledge/:id', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const success = await tradingEngine.deleteKnowledgeRule(id);
+    res.json({ success });
+  });
+
+  app.post('/api/trading/knowledge/mine', async (req: Request, res: Response) => {
+    const { accountId } = req.body || {};
+    const rules = await tradingEngine.mineKnowledgeRules(accountId);
+    res.json({ success: true, knowledgeRules: rules });
   });
 
   // Trading Agent API: Get Supabase SQL & Config
   app.get('/api/trading/supabase-sql', (req: Request, res: Response) => {
-    const sql = `-- Complete Supabase Schema for Hermes Trading Agent
--- Execute this SQL in Supabase Dashboard -> SQL Editor
+    const sql = `-- ====================================================================
+-- Hermes Agent v3 - Complete Idempotent Supabase Database Schema Query
+-- Safe to run multiple times: Creates missing tables, alters existing ones,
+-- configures RLS policies, indexes, views, and seed data without errors.
+-- ====================================================================
 
+-- 1. Table: user_profiles
 CREATE TABLE IF NOT EXISTS public.user_profiles (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   full_name TEXT,
-  role TEXT DEFAULT 'user',
+  role TEXT DEFAULT 'trader',
   is_approved BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Ensure columns exist in user_profiles
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS full_name TEXT;
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'trader';
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 2. Table: risk_rules
 CREATE TABLE IF NOT EXISTS public.risk_rules (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -420,8 +542,15 @@ CREATE TABLE IF NOT EXISTS public.risk_rules (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE public.risk_rules ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT TRUE;
+ALTER TABLE public.risk_rules ADD COLUMN IF NOT EXISTS value NUMERIC DEFAULT 0;
+ALTER TABLE public.risk_rules ADD COLUMN IF NOT EXISTS unit TEXT DEFAULT '%';
+ALTER TABLE public.risk_rules ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 3. Table: trade_orders
 CREATE TABLE IF NOT EXISTS public.trade_orders (
   id TEXT PRIMARY KEY,
+  account_id TEXT DEFAULT 'account_default',
   symbol TEXT NOT NULL,
   type TEXT NOT NULL,
   lot NUMERIC NOT NULL,
@@ -435,42 +564,145 @@ CREATE TABLE IF NOT EXISTS public.trade_orders (
   error TEXT
 );
 
+ALTER TABLE public.trade_orders ADD COLUMN IF NOT EXISTS account_id TEXT DEFAULT 'account_default';
+ALTER TABLE public.trade_orders ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ;
+ALTER TABLE public.trade_orders ADD COLUMN IF NOT EXISTS execution_price NUMERIC;
+ALTER TABLE public.trade_orders ADD COLUMN IF NOT EXISTS error TEXT;
+
+-- 4. Table: trading_logs
 CREATE TABLE IF NOT EXISTS public.trading_logs (
   id TEXT PRIMARY KEY,
+  account_id TEXT DEFAULT 'account_default',
   timestamp TIMESTAMPTZ DEFAULT NOW(),
   type TEXT NOT NULL,
   message TEXT NOT NULL
 );
 
+ALTER TABLE public.trading_logs ADD COLUMN IF NOT EXISTS account_id TEXT DEFAULT 'account_default';
+
+-- 5. Table: agent_memory
 CREATE TABLE IF NOT EXISTS public.agent_memory (
   id TEXT PRIMARY KEY,
+  account_id TEXT,
   category TEXT DEFAULT 'general',
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE public.agent_memory ADD COLUMN IF NOT EXISTS account_id TEXT;
+ALTER TABLE public.agent_memory ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'general';
+
+-- 6. Table: agent_chat_messages
 CREATE TABLE IF NOT EXISTS public.agent_chat_messages (
   id TEXT PRIMARY KEY,
+  account_id TEXT,
   sender TEXT NOT NULL,
   text TEXT NOT NULL,
-  timestamp TIMESTAMPTZ DEFAULT NOW()
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Enable Row Level Security (RLS)
+ALTER TABLE public.agent_chat_messages ADD COLUMN IF NOT EXISTS account_id TEXT;
+ALTER TABLE public.agent_chat_messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 7. Table: trade_journal (Professional Multi-Account Journal Engine)
+CREATE TABLE IF NOT EXISTS public.trade_journal (
+  id TEXT PRIMARY KEY,
+  account_id TEXT DEFAULT 'account_default',
+  account_number NUMERIC,
+  symbol TEXT DEFAULT 'XAUUSD',
+  timeframe TEXT DEFAULT 'M15',
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  ask NUMERIC DEFAULT 0,
+  bid NUMERIC DEFAULT 0,
+  spread NUMERIC DEFAULT 0,
+  candles_summary JSONB,
+  indicators_snapshot JSONB,
+  decision TEXT DEFAULT 'NO_TRADE',
+  confidence NUMERIC DEFAULT 0,
+  persian_analysis TEXT,
+  english_analysis TEXT,
+  confluence_reasons JSONB,
+  order_type TEXT,
+  lot NUMERIC,
+  entry_price NUMERIC,
+  sl NUMERIC,
+  tp NUMERIC,
+  exit_price NUMERIC,
+  exit_time TIMESTAMPTZ,
+  pnl_usd NUMERIC,
+  pnl_points NUMERIC,
+  status TEXT DEFAULT 'PROPOSED',
+  execution_error TEXT,
+  strategy_name TEXT,
+  risk_score NUMERIC DEFAULT 0,
+  news_filter_passed BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Ensure all columns exist in trade_journal if table was created previously
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS account_id TEXT DEFAULT 'account_default';
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS account_number NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS symbol TEXT DEFAULT 'XAUUSD';
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS timeframe TEXT DEFAULT 'M15';
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS timestamp TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS ask NUMERIC DEFAULT 0;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS bid NUMERIC DEFAULT 0;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS spread NUMERIC DEFAULT 0;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS candles_summary JSONB;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS indicators_snapshot JSONB;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS decision TEXT DEFAULT 'NO_TRADE';
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS confidence NUMERIC DEFAULT 0;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS persian_analysis TEXT;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS english_analysis TEXT;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS confluence_reasons JSONB;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS order_type TEXT;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS lot NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS entry_price NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS sl NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS tp NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS exit_price NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS exit_time TIMESTAMPTZ;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS pnl_usd NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS pnl_points NUMERIC;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'PROPOSED';
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS execution_error TEXT;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS strategy_name TEXT;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS risk_score NUMERIC DEFAULT 0;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS news_filter_passed BOOLEAN DEFAULT TRUE;
+ALTER TABLE public.trade_journal ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+
+-- 8. View Alias: hermes_trade_journal
+CREATE OR REPLACE VIEW public.hermes_trade_journal AS
+SELECT * FROM public.trade_journal;
+
+-- 9. Create Performance Indexes for Multi-Account Filtering
+CREATE INDEX IF NOT EXISTS idx_trade_journal_account_id ON public.trade_journal(account_id);
+CREATE INDEX IF NOT EXISTS idx_trade_journal_timestamp ON public.trade_journal(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_memory_account_id ON public.agent_memory(account_id);
+CREATE INDEX IF NOT EXISTS idx_agent_chat_messages_account_id ON public.agent_chat_messages(account_id);
+CREATE INDEX IF NOT EXISTS idx_trade_orders_account_id ON public.trade_orders(account_id);
+CREATE INDEX IF NOT EXISTS idx_trading_logs_account_id ON public.trading_logs(account_id);
+
+-- 10. Row Level Security (RLS) Configuration
 ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.risk_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.trade_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.trading_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.agent_memory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.agent_chat_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trade_journal ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_knowledge ENABLE ROW LEVEL SECURITY;
 
--- Allow public read/write policies for smooth integration
+-- Safely recreate permissive policies for API client access
 DROP POLICY IF EXISTS "Public full access user_profiles" ON public.user_profiles;
 DROP POLICY IF EXISTS "Public full access risk_rules" ON public.risk_rules;
 DROP POLICY IF EXISTS "Public full access trade_orders" ON public.trade_orders;
 DROP POLICY IF EXISTS "Public full access trading_logs" ON public.trading_logs;
 DROP POLICY IF EXISTS "Public full access agent_memory" ON public.agent_memory;
 DROP POLICY IF EXISTS "Public full access agent_chat_messages" ON public.agent_chat_messages;
+DROP POLICY IF EXISTS "Public full access trade_journal" ON public.trade_journal;
+DROP POLICY IF EXISTS "Public full access agent_knowledge" ON public.agent_knowledge;
 
 CREATE POLICY "Public full access user_profiles" ON public.user_profiles FOR ALL USING (true);
 CREATE POLICY "Public full access risk_rules" ON public.risk_rules FOR ALL USING (true);
@@ -478,6 +710,43 @@ CREATE POLICY "Public full access trade_orders" ON public.trade_orders FOR ALL U
 CREATE POLICY "Public full access trading_logs" ON public.trading_logs FOR ALL USING (true);
 CREATE POLICY "Public full access agent_memory" ON public.agent_memory FOR ALL USING (true);
 CREATE POLICY "Public full access agent_chat_messages" ON public.agent_chat_messages FOR ALL USING (true);
+CREATE POLICY "Public full access trade_journal" ON public.trade_journal FOR ALL USING (true);
+CREATE POLICY "Public full access agent_knowledge" ON public.agent_knowledge FOR ALL USING (true);
+
+-- 11. Seed Data: Master Admin Account & Initial Risk Rules
+DO $$
+BEGIN
+  -- Safely insert or update master admin user profile regardless of whether 'id' is UUID or TEXT
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'user_profiles' AND table_schema = 'public' AND data_type LIKE '%uuid%' AND column_name = 'id'
+  ) THEN
+    INSERT INTO public.user_profiles (id, email, full_name, role, is_approved)
+    VALUES ('00000000-0000-0000-0000-000000000001'::uuid, 'raadtaxi1@gmail.com', 'مدیر ارشد هرمس', 'admin', true)
+    ON CONFLICT (email) DO UPDATE SET is_approved = true, role = 'admin';
+  ELSE
+    INSERT INTO public.user_profiles (id, email, full_name, role, is_approved)
+    VALUES ('00000000-0000-0000-0000-000000000001', 'raadtaxi1@gmail.com', 'مدیر ارشد هرمس', 'admin', true)
+    ON CONFLICT (email) DO UPDATE SET is_approved = true, role = 'admin';
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  BEGIN
+    INSERT INTO public.user_profiles (id, email, full_name, role, is_approved)
+    VALUES ('00000000-0000-0000-0000-000000000001', 'raadtaxi1@gmail.com', 'مدیر ارشد هرمس', 'admin', true)
+    ON CONFLICT DO NOTHING;
+  EXCEPTION WHEN OTHERS THEN
+    NULL;
+  END;
+END $$;
+
+INSERT INTO public.risk_rules (id, name, description, is_enabled, value, unit)
+VALUES
+  ('rule_max_daily_loss', 'حداکثر حد ضرر روزانه (Daily Loss Limit)', 'جلوگیری از زیان روزانه بیش از حد مشخص شده', true, 3.0, '%'),
+  ('rule_max_drawdown', 'حداکثر افت حساب (Max Drawdown)', 'سقف مجاز افت کلی بالانس حساب', true, 6.0, '%'),
+  ('rule_max_lot_size', 'حداکثر حجم معامله (Max Lot Size)', 'سقف حجم هر پوزیشن معامله', true, 1.0, 'Lot'),
+  ('rule_min_margin_level', 'حداقل سطح مارجین (Min Margin Level)', 'حداقل سطح مارجین مجاز جهت ورود به معامله جدید', true, 200.0, '%'),
+  ('rule_max_spread_points', 'حداکثر اسپرد مجاز (Max Spread)', 'عدم ورود به معامله در صورت بالاتر بودن اسپرد', true, 35.0, 'Points')
+ON CONFLICT (id) DO NOTHING;
 `;
     res.json({
       sql,

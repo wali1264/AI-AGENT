@@ -111,7 +111,7 @@ export class RiskEngine {
     }
 
     // Rule 5: Maximum Open Positions (Customizable max_open_positions)
-    const maxPositionsRule = getRule('max_open_positions', 2, true);
+    const maxPositionsRule = getRule('max_open_positions', 5, true);
     const maxAllowedPositions = maxPositionsRule.enabled ? maxPositionsRule.value : 10;
 
     if (proposedOrder && proposedOrder.type !== 'CLOSE' && proposedOrder.type !== 'CLOSE_ALL') {

@@ -30,9 +30,13 @@ import {
   Layers,
   Send,
   Bookmark,
+  CheckCheck,
+  Loader2,
 } from 'lucide-react';
 import { TradingState, RiskRule, TradeOrder } from '../types';
 import { supabase } from '../lib/supabaseClient';
+import { MultiAccountManager } from './MultiAccountManager';
+import { TradeJournalView } from './TradeJournalView';
 
 interface TradingAgentViewProps {
   adminToken?: string | null;
@@ -510,7 +514,8 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [supabaseSql, setSupabaseSql] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('https://dqhujeggbndwcavzgnhm.supabase.co');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
-  const [activeSubTab, setActiveSubTab] = useState<'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('risk');
+  const [activeSubTab, setActiveSubTab] = useState<'accounts' | 'journal' | 'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('accounts');
+  const [activeAccountId, setActiveAccountId] = useState<string>('MT5_9028145');
 
   // Customizable Risk Engine State
   const [riskRules, setRiskRules] = useState<RiskRule[]>([]);
@@ -676,13 +681,15 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   // Chat, Memory & System Prompt state
   const chatMessagesBoxRef = React.useRef<HTMLDivElement>(null);
+  const isUserScrolledUpRef = React.useRef(false);
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([
+  const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string; status?: 'sending' | 'delivered' }>([
     {
       id: 'welcome_msg_1',
       sender: 'agent',
       text: 'سلام! من ایجنت هوشمند معامله‌گر هرمس (Hermes) هستم. دستورات، درخواست معامله، تحلیل طلا یا قوانین جدیدی بفرمایید تا فوراً انجام دهم.',
       timestamp: new Date().toISOString(),
+      status: 'delivered',
     },
   ]);
   const [agentMemory, setAgentMemory] = useState<{ id: string; category: string; content: string; createdAt: string }[]>([]);
@@ -690,9 +697,18 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [memoryCat, setMemoryCat] = useState('قوانین کاربری');
   const [memoryContent, setMemoryContent] = useState('');
 
-  // Scroll ONLY the inner chat container to bottom on message updates (without moving main window scrollbar)
-  useEffect(() => {
+  // Handle manual scroll detection to prevent forcing scroll when user moves up
+  const handleChatScroll = () => {
     if (chatMessagesBoxRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatMessagesBoxRef.current;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 60;
+      isUserScrolledUpRef.current = !isAtBottom;
+    }
+  };
+
+  // Scroll ONLY the inner chat container to bottom on message updates if user is at the bottom
+  useEffect(() => {
+    if (chatMessagesBoxRef.current && !isUserScrolledUpRef.current) {
       chatMessagesBoxRef.current.scrollTop = chatMessagesBoxRef.current.scrollHeight;
     }
   }, [chatMessages]);
@@ -749,15 +765,25 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   const fetchAgentMemoryAndChat = async () => {
     try {
-      const res = await fetch('/api/trading/memory');
+      const res = await fetch(`/api/trading/memory?accountId=${activeAccountId}`);
       if (res.ok) {
         const data = await res.json();
         if (data.memory) setAgentMemory(data.memory);
         if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
-          const sorted = [...data.messages].sort(
-            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-          );
-          setChatMessages(sorted);
+          setChatMessages((prev) => {
+            const map = new Map<string, any>();
+            prev.forEach((m) => map.set(m.id, m));
+            data.messages.forEach((m: any) => {
+              const existing = map.get(m.id);
+              map.set(m.id, {
+                ...m,
+                status: existing?.status === 'sending' ? 'sending' : 'delivered',
+              });
+            });
+            return Array.from(map.values()).sort(
+              (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            );
+          });
         }
       }
     } catch (err) {
@@ -773,30 +799,46 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     setChatInput('');
     setIsSendingChat(true);
 
+    // Force scroll to bottom on user send
+    isUserScrolledUpRef.current = false;
+
     const tempUserId = `user_${Date.now()}`;
     const tempUserMsg = {
       id: tempUserId,
       sender: 'user' as const,
       text: userText,
       timestamp: new Date().toISOString(),
+      status: 'sending' as const,
     };
 
     // Optimistically update chat state so user message never disappears
     setChatMessages((prev) => [...prev, tempUserMsg]);
 
+    setTimeout(() => {
+      if (chatMessagesBoxRef.current) {
+        chatMessagesBoxRef.current.scrollTop = chatMessagesBoxRef.current.scrollHeight;
+      }
+    }, 50);
+
     try {
       const res = await fetch('/api/trading/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: userText }),
+        body: JSON.stringify({ text: userText, accountId: activeAccountId }),
       });
       if (res.ok) {
         const data = await res.json();
         if (data.chatMessages && Array.isArray(data.chatMessages)) {
           setChatMessages((prev) => {
             const map = new Map<string, any>();
-            prev.forEach((m) => map.set(m.id, m));
-            data.chatMessages.forEach((m: any) => map.set(m.id, m));
+            prev.forEach((m) => {
+              if (m.id === tempUserId) {
+                map.set(m.id, { ...m, status: 'delivered' as const });
+              } else {
+                map.set(m.id, m);
+              }
+            });
+            data.chatMessages.forEach((m: any) => map.set(m.id, { ...m, status: 'delivered' as const }));
             return Array.from(map.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
           });
         }
@@ -808,8 +850,12 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           sender: 'agent' as const,
           text: 'مشکلی در پردازش دستور توسط سرور هرمس رخ داد. لطفاً دوباره تلاش کنید.',
           timestamp: new Date().toISOString(),
+          status: 'delivered' as const,
         };
-        setChatMessages((prev) => [...prev, errorMsg]);
+        setChatMessages((prev) => [
+          ...prev.map((m) => (m.id === tempUserId ? { ...m, status: 'delivered' as const } : m)),
+          errorMsg,
+        ]);
       }
     } catch (err) {
       console.error('Failed to send chat message:', err);
@@ -818,10 +864,19 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         sender: 'agent' as const,
         text: 'خطا در ارتباط با سرور. لطفا اتصال اینترنت خود را بررسی کنید.',
         timestamp: new Date().toISOString(),
+        status: 'delivered' as const,
       };
-      setChatMessages((prev) => [...prev, errorMsg]);
+      setChatMessages((prev) => [
+        ...prev.map((m) => (m.id === tempUserId ? { ...m, status: 'delivered' as const } : m)),
+        errorMsg,
+      ]);
     } finally {
       setIsSendingChat(false);
+      setTimeout(() => {
+        if (chatMessagesBoxRef.current && !isUserScrolledUpRef.current) {
+          chatMessagesBoxRef.current.scrollTop = chatMessagesBoxRef.current.scrollHeight;
+        }
+      }, 50);
     }
   };
 
@@ -833,7 +888,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       const res = await fetch('/api/trading/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category: memoryCat, content: memoryContent }),
+        body: JSON.stringify({ category: memoryCat, content: memoryContent, accountId: activeAccountId }),
       });
       if (res.ok) {
         setMemoryContent('');
@@ -846,7 +901,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   const handleDeleteMemoryNote = async (id: string) => {
     try {
-      const res = await fetch(`/api/trading/memory/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/trading/memory/${id}?accountId=${activeAccountId}`, { method: 'DELETE' });
       if (res.ok) {
         fetchAgentMemoryAndChat();
       }
@@ -926,16 +981,17 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     fetchEaCode();
     fetchSupabaseSql();
     fetchUsersFromSupabase();
-    fetchAgentMemoryAndChat();
     fetchSystemPrompt();
     fetchTelemetryData();
+    fetchAgentMemoryAndChat();
+
     const interval = setInterval(() => {
       fetchTradingState();
       fetchAgentMemoryAndChat();
       fetchTelemetryData();
     }, 2500); // Live poll every 2.5s
     return () => clearInterval(interval);
-  }, []);
+  }, [activeAccountId]);
 
   const handleRegisterUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1246,6 +1302,30 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       {/* Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-gray-200 pb-2 overflow-x-auto">
         <button
+          onClick={() => setActiveSubTab('accounts')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'accounts'
+              ? 'bg-blue-700 text-white shadow-sm font-bold'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Layers className="w-4 h-4 text-sky-300" />
+          <span>مدیریت حساب‌های چندگانه (Multi-Account)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('journal')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'journal'
+              ? 'bg-indigo-700 text-white shadow-sm font-bold'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Bookmark className="w-4 h-4 text-indigo-300" />
+          <span>ژورنال معاملات AI (Trade Journal)</span>
+        </button>
+
+        <button
           onClick={() => setActiveSubTab('risk')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'risk'
@@ -1329,6 +1409,23 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           <span>حافظه و لاگ‌های ایجنت</span>
         </button>
       </div>
+
+      {/* SUB-TAB: Multi-Account Manager */}
+      {activeSubTab === 'accounts' && (
+        <MultiAccountManager
+          activeAccountId={activeAccountId}
+          onAccountSelect={(accId) => {
+            setActiveAccountId(accId);
+            fetchTradingState();
+            fetchAgentMemoryAndChat();
+          }}
+        />
+      )}
+
+      {/* SUB-TAB: AI Trade Journal */}
+      {activeSubTab === 'journal' && (
+        <TradeJournalView activeAccountId={activeAccountId} />
+      )}
 
       {/* SUB-TAB: Customizable Risk Engine */}
       {activeSubTab === 'risk' && (
@@ -2623,7 +2720,11 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
             </div>
 
             {/* Chat Messages Container */}
-            <div ref={chatMessagesBoxRef} className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 h-[460px] md:h-[520px] overflow-y-auto space-y-4 dir-rtl shadow-inner">
+            <div
+              ref={chatMessagesBoxRef}
+              onScroll={handleChatScroll}
+              className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 h-[460px] md:h-[520px] overflow-y-auto space-y-4 dir-rtl shadow-inner"
+            >
               {chatMessages.length > 0 ? (
                 chatMessages.map((msg) => (
                   <div
@@ -2648,9 +2749,18 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                             <span>ربات هوشمند هرمس</span>
                           </span>
                         )}
-                        <span className="font-mono text-[9px] opacity-80">
-                          {new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
+                        <div className="flex items-center gap-1 font-mono text-[9px] opacity-80">
+                          <span>
+                            {new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          {msg.sender === 'user' && (
+                            msg.status === 'sending' ? (
+                              <Loader2 className="w-3 h-3 text-blue-200 animate-spin" title="در حال ارسال به سرور..." />
+                            ) : (
+                              <CheckCheck className="w-3.5 h-3.5 text-blue-200" title="تحویل داده شد به ایجنت" />
+                            )
+                          )}
+                        </div>
                       </div>
                       <p className="whitespace-pre-wrap">{msg.text}</p>
                     </div>
@@ -2675,10 +2785,19 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
               <button
                 type="submit"
                 disabled={isSendingChat || !chatInput.trim()}
-                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-sm"
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-2 shadow-sm shrink-0 min-w-[110px]"
               >
-                <span>ارسال</span>
-                <Send className="w-3.5 h-3.5" />
+                {isSendingChat ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>در حال ارسال...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>ارسال</span>
+                    <Send className="w-3.5 h-3.5" />
+                  </>
+                )}
               </button>
             </form>
           </div>

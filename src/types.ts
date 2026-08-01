@@ -376,11 +376,100 @@ export interface EABridgeStatus {
 
 export interface RiskRule {
   id: string;
+  accountId?: string;
   name: string;
   description: string;
   isEnabled: boolean;
   value: number | string;
   unit: 'percentage' | 'usd' | 'lot' | 'boolean' | 'hours';
+}
+
+export interface TradeJournalEntry {
+  id: string;
+  accountId: string;
+  accountNumber?: number;
+  symbol: string;
+  timeframe: string;
+  timestamp: string;
+  
+  // Market Snapshot & Technical Context
+  ask: number;
+  bid: number;
+  spread: number;
+  candlesSummary?: {
+    lastClose: number;
+    trend: string;
+  };
+  indicatorsSnapshot?: Record<string, any>;
+  
+  // AI Decision & Reasoning
+  decision: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE_ALL';
+  confidence: number; // 0 to 100
+  persianAnalysis?: string;
+  englishAnalysis?: string;
+  confluenceReasons?: string[];
+  
+  // Order Parameters & Outcome
+  orderType?: 'BUY' | 'SELL' | 'CLOSE';
+  lot?: number;
+  entryPrice?: number;
+  sl?: number;
+  tp?: number;
+  exitPrice?: number;
+  exitTime?: string;
+  pnlUsd?: number;
+  pnlPoints?: number;
+  status: 'PROPOSED' | 'EXECUTED' | 'ACTIVE' | 'CLOSED' | 'CANCELLED' | 'FAILED';
+  executionError?: string;
+  
+  // Strategy & Risk
+  strategyName?: string;
+  riskScore?: number;
+  newsFilterPassed?: boolean;
+}
+
+export interface MultiAccountConfig {
+  accountId: string; // e.g. "MT5_1082391" or "account_default"
+  accountNumber: number;
+  broker: string;
+  name: string; // e.g. "طلا - موج سواری", "بیتکوین - سوئینگ"
+  strategyType: 'SURFING' | 'INTRADAY' | 'SWING' | 'SCALPING' | 'CUSTOM';
+  isEnabled: boolean;
+  assignedAgentName: string;
+  riskRules: RiskRule[];
+  trailingStopConfig: TrailingStopConfig;
+  createdAt: string;
+  lastActiveAt?: string;
+}
+
+export interface AgentKnowledgeRule {
+  id: string;
+  ruleCode: string;
+  title: string;
+  descriptionPersian: string;
+  sampleSize: number;
+  winRateImpact: number;
+  confidenceScore: number;
+  category: 'SPREAD' | 'CONFIDENCE' | 'NEWS' | 'TIMEFRAME' | 'DRAWDOWN' | 'GENERAL';
+  isEnabled: boolean;
+  createdAt: string;
+  updatedAt?: string;
+  accountId?: string;
+}
+
+export interface MultiAccountState {
+  config: MultiAccountConfig;
+  accountInfo: ExtendedAccountInfo;
+  positions: PositionInfo[];
+  pendingOrders: TradeOrder[];
+  orderHistory: TradeOrder[];
+  tradingLogs: AgentTradingLog[];
+  bridgeStatus: EABridgeStatus;
+  lastTick: TickData | null;
+  unifiedSnapshot?: UnifiedSnapshot | null;
+  journalEntries: TradeJournalEntry[];
+  memory: { id: string; category: string; content: string; createdAt: string; accountId?: string }[];
+  knowledgeRules?: AgentKnowledgeRule[];
 }
 
 export interface AgentTradingLog {
