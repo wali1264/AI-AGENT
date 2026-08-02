@@ -1,0 +1,6 @@
+{
+  "name": "Hermes Cloud Router & Control Panel",
+  "description": "Enterprise Cloud Gateway & Intelligent AI Router Control Panel for Hermes Agent with Multi-Key Pool, Auto Failover & OpenAI API Compatibility",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
