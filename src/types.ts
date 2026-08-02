@@ -110,6 +110,7 @@ export interface TradeOrder {
   executionPrice?: number;
   error?: string;
   source: 'ai_agent' | 'user_manual' | 'telegram';
+  accountId?: string;
 }
 
 export interface TickData {

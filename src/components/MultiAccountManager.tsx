@@ -213,7 +213,7 @@ export const MultiAccountManager: React.FC<MultiAccountManagerProps> = ({
               </label>
               <input
                 type="number"
-                placeholder="مثلا 9028145"
+                placeholder="شماره حساب متاتریدر ۵"
                 value={newAccNumber}
                 onChange={(e) => setNewAccNumber(e.target.value)}
                 className="w-full text-xs px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
@@ -284,8 +284,17 @@ export const MultiAccountManager: React.FC<MultiAccountManagerProps> = ({
       )}
 
       {/* Accounts Grid Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {accounts.map((acc) => {
+      {accounts.length === 0 ? (
+        <div className="bg-amber-50/60 border border-amber-200 rounded-xl p-6 text-center space-y-2">
+          <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
+          <h4 className="text-xs font-bold text-amber-900">هیچ حساب متاتریدری در حال حاضر متصل نیست</h4>
+          <p className="text-xs text-amber-700 max-w-md mx-auto">
+            به محض اینکه ربات Expert Advisor (MQL5) روی متاتریدر ۵ روشن شود و اولین درخواست را ارسال کند، حساب شما به‌صورت خودکار و زنده شناسایی و در این بخش نمایش داده خواهد شد.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {accounts.map((acc) => {
           const isActive = acc.accountId === activeAccountId || acc.isActive;
           return (
             <div
@@ -364,6 +373,7 @@ export const MultiAccountManager: React.FC<MultiAccountManagerProps> = ({
           );
         })}
       </div>
+      )}
     </div>
   );
 };

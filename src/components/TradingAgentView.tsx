@@ -15,6 +15,7 @@ import {
   Zap,
   DollarSign,
   Globe,
+  Compass,
   Sliders,
   Play,
   XCircle,
@@ -516,7 +517,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [supabaseUrl, setSupabaseUrl] = useState<string>('https://dqhujeggbndwcavzgnhm.supabase.co');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
   const [activeSubTab, setActiveSubTab] = useState<'copilot' | 'accounts' | 'journal' | 'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('copilot');
-  const [activeAccountId, setActiveAccountId] = useState<string>('MT5_1200276147');
+  const [activeAccountId, setActiveAccountId] = useState<string>('');
 
   // Customizable Risk Engine State
   const [riskRules, setRiskRules] = useState<RiskRule[]>([]);
@@ -668,8 +669,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   // New Order Form & Multi-Account state
   const [multiAccountsList, setMultiAccountsList] = useState<any[]>([]);
-  const [orderAccountId, setOrderAccountId] = useState<string>('MT5_1200276147');
-  const [symbol, setSymbol] = useState('BTCUSD');
+  const [liveSymbolsList, setLiveSymbolsList] = useState<{ symbol: string; source: string; lastPrice?: number }[]>([]);
+  const [orderAccountId, setOrderAccountId] = useState<string>('');
+  const [symbol, setSymbol] = useState('');
   const [customSymbolInput, setCustomSymbolInput] = useState('');
   const [isCustomSymbol, setIsCustomSymbol] = useState(false);
   const [orderType, setOrderType] = useState<'BUY' | 'SELL' | 'CLOSE_ALL'>('BUY');
@@ -973,10 +975,34 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         const data = await res.json();
         if (data.accounts && Array.isArray(data.accounts)) {
           setMultiAccountsList(data.accounts);
+          if (data.accounts.length > 0) {
+            if (data.activeAccountId) setActiveAccountId(data.activeAccountId);
+            setOrderAccountId((prev) => prev || data.activeAccountId || data.accounts[0].accountId);
+          } else {
+            setActiveAccountId('');
+            setOrderAccountId('');
+          }
         }
       }
     } catch (err) {
       console.error('Failed to fetch multi accounts:', err);
+    }
+  };
+
+  const fetchLiveSymbols = async () => {
+    try {
+      const res = await fetch('/api/trading/symbols');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.symbols && Array.isArray(data.symbols)) {
+          setLiveSymbolsList(data.symbols);
+          if (data.symbols.length > 0 && !symbol) {
+            setSymbol(data.symbols[0].symbol);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch live symbols:', err);
     }
   };
 
@@ -1001,6 +1027,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   useEffect(() => {
     fetchTradingState();
     fetchMultiAccounts();
+    fetchLiveSymbols();
     fetchRiskRules();
     fetchEaCode();
     fetchSupabaseSql();
@@ -1012,6 +1039,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     const interval = setInterval(() => {
       fetchTradingState();
       fetchMultiAccounts();
+      fetchLiveSymbols();
       fetchAgentMemoryAndChat();
       fetchTelemetryData();
     }, 2500); // Live poll every 2.5s
@@ -1811,11 +1839,11 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                   {multiAccountsList.length > 0 ? (
                     multiAccountsList.map((acc: any) => (
                       <option key={acc.accountId} value={acc.accountId}>
-                        {acc.accountId} ({acc.name}) {acc.accountNumber ? ` - #${acc.accountNumber}` : ''} - موجودی: ${acc.balance?.toFixed(2) || '0'}
+                        {acc.isConnected ? '🟢' : '🔴'} {acc.accountId} ({acc.name}) {acc.accountNumber ? ` - #${acc.accountNumber}` : ''} {acc.isConnected ? `- موجودی: $${acc.balance?.toFixed(2) || '0'}` : '(غیرفعال - در انتظار MT5)'}
                       </option>
                     ))
                   ) : (
-                    <option value={activeAccountId}>{activeAccountId} (حساب فعال پیش‌فرض)</option>
+                    <option value={activeAccountId}>🔴 {activeAccountId} - (در انتظار اولین اتصال MQL5)</option>
                   )}
                 </select>
               </div>
@@ -1824,7 +1852,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
               <div className="space-y-2">
                 <label className="block text-xs font-bold text-gray-800 flex items-center gap-1">
                   <Compass className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>منوی کشویی انتخاب نماد (Symbol Country Menu)</span>
+                  <span>منوی کشویی انتخاب نماد (Symbol Country Menu - دریافت زنده از MT5)</span>
                 </label>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1842,27 +1870,19 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                       }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono font-bold text-gray-900 bg-white focus:outline-none focus:border-emerald-500 shadow-sm"
                     >
-                      <optgroup label="🪙 ارزهای دیجیتال (Crypto)">
-                        <option value="BTCUSD">BTCUSD - بیت‌کوین (Bitcoin)</option>
-                        <option value="BTCUSD.m">BTCUSD.m - بیت‌کوین بروکر (Macro)</option>
-                        <option value="ETHUSD">ETHUSD - اتریوم (Ethereum)</option>
-                        <option value="SOLUSD">SOLUSD - سولانا (Solana)</option>
-                      </optgroup>
-                      <optgroup label="🥇 فلزات و کالاها (Metals & Energy)">
-                        <option value="XAUUSD">XAUUSD - طلا (Gold)</option>
-                        <option value="XAUUSD.m">XAUUSD.m - طلا بروکر (Broker Gold)</option>
-                        <option value="XAGUSD">XAGUSD - نقره (Silver)</option>
-                        <option value="USOIL">USOIL - نفت خام (Crude Oil)</option>
-                      </optgroup>
-                      <optgroup label="💱 جفت‌ارزهای اصلی فارکس (Forex Majors)">
-                        <option value="EURUSD">EURUSD - یورو / دلار</option>
-                        <option value="GBPUSD">GBPUSD - پوند انگلیس / دلار</option>
-                        <option value="USDJPY">USDJPY - دلار / ین ژاپن</option>
-                        <option value="AUDUSD">AUDUSD - دلار استرالیا / دلار</option>
-                        <option value="USDCAD">USDCAD - دلار / دلار کانادا</option>
-                      </optgroup>
-                      <optgroup label="✏️ گزینه سفارشی">
-                        <option value="CUSTOM">تایپ نماد اختصاصی دیگر...</option>
+                      {liveSymbolsList.length > 0 ? (
+                        <optgroup label="📊 نمادهای دریافتی زنده از متاتریدر ۵ (Live MQL5 Ticks)">
+                          {liveSymbolsList.map((item) => (
+                            <option key={item.symbol} value={item.symbol}>
+                              {item.symbol} ({item.source}){item.lastPrice ? ` - $${item.lastPrice.toFixed(2)}` : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : (
+                        <option value="" disabled>🔴 در انتظار دریافت نماد زنده از MQL5 (تیکی دریافت نشده)</option>
+                      )}
+                      <optgroup label="✏️ انتخاب یا تایپ دستی">
+                        <option value="CUSTOM">تایپ دستی نماد دیگر (Custom Symbol)...</option>
                       </optgroup>
                     </select>
 
@@ -2329,9 +2349,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                   </span>
                 </div>
                 <div className="space-y-1 text-gray-600 text-[11px]">
-                  <p>حساب: <span className="font-mono text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.accountNumber || tradingState?.bridgeStatus?.accountInfo?.accountNumber || 9028145}</span></p>
-                  <p>بروکر: <span className="text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.broker || tradingState?.bridgeStatus?.accountInfo?.broker || '.Markets Ltd'}</span></p>
-                  <p>موجودی: <span className="font-mono font-bold text-emerald-700">${telemetryData?.bridgeStatus?.accountInfo?.balance ?? (tradingState?.bridgeStatus?.accountInfo?.balance ?? 971.49)}</span></p>
+                  <p>حساب: <span className="font-mono text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.accountNumber || tradingState?.bridgeStatus?.accountInfo?.accountNumber || '---'}</span></p>
+                  <p>بروکر: <span className="text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.broker || tradingState?.bridgeStatus?.accountInfo?.broker || 'در انتظار MQL5'}</span></p>
+                  <p>موجودی: <span className="font-mono font-bold text-emerald-700">${(telemetryData?.bridgeStatus?.accountInfo?.balance ?? tradingState?.bridgeStatus?.accountInfo?.balance) ?? 0}</span></p>
                 </div>
               </div>
 

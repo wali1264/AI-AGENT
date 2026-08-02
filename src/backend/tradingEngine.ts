@@ -177,7 +177,7 @@ class TradingEngine {
   private latestUnifiedSnapshot: UnifiedSnapshot | null = null;
 
   private accountsMap: Map<string, MultiAccountState> = new Map();
-  private activeAccountId: string = 'MT5_9028145';
+  private activeAccountId: string = '';
   private knowledgeRules: AgentKnowledgeRule[] = [];
 
   private copilotConfigs: Map<string, CopilotConfig> = new Map();
@@ -190,16 +190,16 @@ class TradingEngine {
     name?: string,
     strategyType?: MultiAccountConfig['strategyType']
   ): MultiAccountState {
-    const accNum = accountNumber || (accountId.startsWith('MT5_') ? parseInt(accountId.replace('MT5_', '')) || 9028145 : 9028145);
+    const accNum = accountNumber || (accountId.startsWith('MT5_') ? parseInt(accountId.replace('MT5_', '')) || 0 : 0);
     
     if (!this.accountsMap.has(accountId)) {
       const defaultState: MultiAccountState = {
         config: {
           accountId,
           accountNumber: accNum,
-          broker: broker || '.Markets Ltd',
-          name: name || (accNum === 9028145 ? 'طلا - اسکالپ هوشمند' : accNum === 1082391 ? 'بیتکوین - سوئینگ' : `حساب متاتریدر ${accNum}`),
-          strategyType: strategyType || (accNum === 1082391 ? 'SWING' : accNum === 3004812 ? 'INTRADAY' : 'SURFING'),
+          broker: broker || 'در انتظار اتصال MT5',
+          name: name || (accNum > 0 ? `حساب متاتریدر ${accNum}` : `حساب غیرفعال ${accountId}`),
+          strategyType: strategyType || 'SURFING',
           isEnabled: true,
           assignedAgentName: 'Hermes Agent',
           riskRules: JSON.parse(JSON.stringify(INITIAL_RISK_RULES)),
@@ -215,11 +215,11 @@ class TradingEngine {
         },
         accountInfo: {
           accountNumber: accNum,
-          broker: broker || '.Markets Ltd',
-          balance: 971.49,
-          equity: 971.49,
+          broker: broker || 'در انتظار اتصال MT5',
+          balance: 0,
+          equity: 0,
           margin: 0,
-          freeMargin: 971.49,
+          freeMargin: 0,
           openPositionsCount: 0,
           currency: 'USD',
         },
@@ -231,7 +231,7 @@ class TradingEngine {
             id: `log_init_${accountId}`,
             timestamp: new Date().toISOString(),
             type: 'ai_analysis',
-            message: `حساب ${accountId} با استیت ایزوله مستقل مقداردهی اولیه شد.`,
+            message: `حساب ${accountId} آماده دریافت اطلاعات زنده از متاتریدر ۵ است.`,
           },
         ],
         bridgeStatus: {
@@ -241,19 +241,19 @@ class TradingEngine {
           initialSyncCompleted: false,
           accountInfo: {
             accountNumber: accNum,
-            broker: broker || '.Markets Ltd',
-            balance: 971.49,
-            equity: 971.49,
+            broker: broker || 'در انتظار اتصال MT5',
+            balance: 0,
+            equity: 0,
             margin: 0,
-            freeMargin: 971.49,
+            freeMargin: 0,
             openPositionsCount: 0,
             currency: 'USD',
           },
           dataQuality: {
             lastTickAgeMs: 0,
             isConnected: false,
-            isDataComplete: true,
-            latencyMs: 12,
+            isDataComplete: false,
+            latencyMs: 0,
             serverTime: new Date().toISOString(),
             localTime: new Date().toISOString(),
             lastSuccessfulSync: new Date().toISOString(),
@@ -263,15 +263,7 @@ class TradingEngine {
         },
         lastTick: null,
         journalEntries: [],
-        memory: [
-          {
-            id: `mem_init_${accountId}`,
-            category: 'قوانین حساب',
-            content: `قوانین ایزوله حساب ${accountId} فعال است.`,
-            createdAt: new Date().toISOString(),
-            accountId,
-          },
-        ],
+        memory: [],
       };
       this.accountsMap.set(accountId, defaultState);
     }
@@ -279,10 +271,7 @@ class TradingEngine {
   }
 
   public initDefaultAccounts() {
-    if (this.accountsMap.size === 0) {
-      this.getOrCreateAccountState('MT5_1200276147', 1200276147, 'Just Global Markets Ltd.', 'حساب متاتریدر 1200276147', 'SURFING');
-      this.activeAccountId = 'MT5_1200276147';
-    }
+    // No fake accounts created automatically. Accounts are created dynamically when MT5 EA connects.
   }
 
   public deleteAccount(accountId: string): boolean {
@@ -300,20 +289,70 @@ class TradingEngine {
   }
 
   public getAccountsList() {
-    this.initDefaultAccounts();
     const result: any[] = [];
+    const now = Date.now();
     for (const [accId, accState] of this.accountsMap.entries()) {
+      const lastHb = accState.bridgeStatus.lastHeartbeat
+        ? new Date(accState.bridgeStatus.lastHeartbeat).getTime()
+        : 0;
+      const isConnected = lastHb > 0 && (now - lastHb) < 15000;
+
       result.push({
         ...accState.config,
-        balance: accState.accountInfo.balance,
-        equity: accState.accountInfo.equity,
-        openPositionsCount: accState.positions.length,
-        isConnected: accState.bridgeStatus.isConnected,
+        balance: isConnected ? accState.accountInfo.balance : accState.accountInfo.balance,
+        equity: isConnected ? accState.accountInfo.equity : accState.accountInfo.equity,
+        openPositionsCount: isConnected ? accState.positions.length : 0,
+        isConnected,
         isActive: accId === this.activeAccountId,
         journalEntriesCount: accState.journalEntries.length,
+        lastHeartbeat: accState.bridgeStatus.lastHeartbeat,
       });
     }
     return result;
+  }
+
+  public getLiveSymbolsList(): { symbol: string; source: string; lastPrice?: number }[] {
+    const symbolsMap = new Map<string, { symbol: string; source: string; lastPrice?: number }>();
+    const now = Date.now();
+
+    for (const [accId, accState] of this.accountsMap.entries()) {
+      const lastHb = accState.bridgeStatus.lastHeartbeat
+        ? new Date(accState.bridgeStatus.lastHeartbeat).getTime()
+        : 0;
+      const isConnected = lastHb > 0 && (now - lastHb) < 15000;
+
+      if (isConnected && accState.lastTick?.symbol) {
+        symbolsMap.set(accState.lastTick.symbol, {
+          symbol: accState.lastTick.symbol,
+          source: `چارت زنده MT5 (#${accState.accountInfo.accountNumber || accId})`,
+          lastPrice: accState.lastTick.ask || accState.lastTick.bid,
+        });
+      }
+
+      if (isConnected) {
+        for (const pos of accState.positions) {
+          if (pos.symbol && !symbolsMap.has(pos.symbol)) {
+            symbolsMap.set(pos.symbol, {
+              symbol: pos.symbol,
+              source: `پوزیشن باز زنده (#${pos.ticket})`,
+              lastPrice: pos.entryPrice,
+            });
+          }
+        }
+      }
+    }
+
+    if (this.state.bridgeStatus.isConnected && this.state.lastTick?.symbol) {
+      if (!symbolsMap.has(this.state.lastTick.symbol)) {
+        symbolsMap.set(this.state.lastTick.symbol, {
+          symbol: this.state.lastTick.symbol,
+          source: 'چارت زنده متاتریدر ۵',
+          lastPrice: this.state.lastTick.ask,
+        });
+      }
+    }
+
+    return Array.from(symbolsMap.values());
   }
 
   public switchActiveAccount(accountId: string): boolean {
@@ -434,8 +473,6 @@ class TradingEngine {
     const targetId = accountId || this.activeAccountId;
     if (!this.copilotOpportunities.has(targetId)) {
       this.copilotOpportunities.set(targetId, []);
-      // Generate initial active opportunity
-      this.generateCopilotOpportunity('XAUUSD', targetId, 'SCALPING');
     }
     const list = this.copilotOpportunities.get(targetId)!;
     const now = new Date();
@@ -458,9 +495,11 @@ class TradingEngine {
     const sym = symbolInput || config.preferredSymbols[0] || 'XAUUSD';
     const style = overrideStyle || config.style;
 
-    const tick = accState.lastTick?.symbol === sym ? accState.lastTick : null;
-    let basePrice = tick?.ask || (sym === 'XAUUSD' ? 2650.50 : sym === 'EURUSD' ? 1.0850 : sym === 'BTCUSD' ? 67500 : 1.2950);
-    basePrice = Number(basePrice);
+    const tick = accState.lastTick;
+    if (!tick || !accState.bridgeStatus.isConnected) {
+      throw new Error('برای دریافت پیشنهاد معامله کوپایلت، برقراری اتصال زنده ربات MQL5 در متاتریدر ۵ الزامی است.');
+    }
+    let basePrice = Number(tick.ask || tick.bid || 0);
 
     const directions: ('BUY' | 'SELL' | 'WAIT')[] = ['BUY', 'SELL', 'BUY'];
     const direction = directions[Math.floor(Math.random() * directions.length)];
@@ -598,82 +637,25 @@ class TradingEngine {
   }
 
   public getMarketScannerData(): MarketScannerItem[] {
-    const accState = this.getAccountState();
-    const tick = accState.lastTick;
-    const goldPrice = tick?.symbol === 'XAUUSD' ? tick.ask : 2650.50;
+    const liveSymbols = this.getLiveSymbolsList();
+    if (liveSymbols.length === 0) {
+      return [];
+    }
 
-    return [
-      {
-        symbol: 'XAUUSD',
-        nameFa: 'طلا / دلار آمریکا',
-        price: goldPrice,
-        change24h: +0.42,
-        trend: 'BULLISH',
-        trendFa: 'صعودی قوی',
-        strengthScore: 88,
-        volatility: 'HIGH',
-        volatilityFa: 'پرنوسان عالی برای اسکالپ',
-        bestOpportunitySignal: 'BUY',
-        confidence: 88,
-        lastUpdate: new Date().toISOString(),
-      },
-      {
-        symbol: 'EURUSD',
-        nameFa: 'یورو / دلار آمریکا',
-        price: 1.0854,
-        change24h: -0.15,
-        trend: 'BEARISH',
-        trendFa: 'نزولی ملایم',
-        strengthScore: 72,
-        volatility: 'MEDIUM',
-        volatilityFa: 'متوسط',
-        bestOpportunitySignal: 'SELL',
-        confidence: 76,
-        lastUpdate: new Date().toISOString(),
-      },
-      {
-        symbol: 'BTCUSD',
-        nameFa: 'بیت‌کوین / دلار آمریکا',
-        price: 67450.0,
-        change24h: +2.18,
-        trend: 'BULLISH',
-        trendFa: 'صعودی پرقدرت',
-        strengthScore: 91,
-        volatility: 'HIGH',
-        volatilityFa: 'شدید',
-        bestOpportunitySignal: 'BUY',
-        confidence: 84,
-        lastUpdate: new Date().toISOString(),
-      },
-      {
-        symbol: 'GBPUSD',
-        nameFa: 'پوند انگلیس / دلار',
-        price: 1.2942,
-        change24h: +0.08,
-        trend: 'NEUTRAL',
-        trendFa: 'رنج و خنثی',
-        strengthScore: 54,
-        volatility: 'LOW',
-        volatilityFa: 'کم‌نوسان',
-        bestOpportunitySignal: 'WAIT',
-        confidence: 60,
-        lastUpdate: new Date().toISOString(),
-      },
-      {
-        symbol: 'USDJPY',
-        nameFa: 'دلار آمریکا / ین ژاپن',
-        price: 154.20,
-        change24h: -0.32,
-        trend: 'BEARISH',
-        trendFa: 'نزولی',
-        strengthScore: 79,
-        volatility: 'MEDIUM',
-        volatilityFa: 'متوسط',
-        bestOpportunitySignal: 'SELL',
-        confidence: 78,
-        lastUpdate: new Date().toISOString(),
-      },
-    ];
+    return liveSymbols.map((item) => ({
+      symbol: item.symbol,
+      nameFa: item.symbol,
+      price: item.lastPrice || 0,
+      change24h: 0,
+      trend: 'NEUTRAL',
+      trendFa: 'پایش زنده MQL5',
+      strengthScore: 80,
+      volatility: 'MEDIUM',
+      volatilityFa: 'دریافت شده از چارت MT5',
+      bestOpportunitySignal: 'WAIT',
+      confidence: 80,
+      lastUpdate: new Date().toISOString(),
+    }));
   }
 
   private state: TradingState = {
@@ -683,20 +665,20 @@ class TradingEngine {
       latencyMs: 0,
       initialSyncCompleted: false,
       accountInfo: {
-        accountNumber: 9028145,
-        broker: '.Markets Ltd',
-        balance: 971.49,
-        equity: 971.49,
+        accountNumber: 0,
+        broker: 'در انتظار اتصال MT5',
+        balance: 0,
+        equity: 0,
         margin: 0,
-        freeMargin: 971.49,
+        freeMargin: 0,
         openPositionsCount: 0,
         currency: 'USD',
       },
       dataQuality: {
         lastTickAgeMs: 0,
         isConnected: false,
-        isDataComplete: true,
-        latencyMs: 12,
+        isDataComplete: false,
+        latencyMs: 0,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
         lastSuccessfulSync: new Date().toISOString(),
@@ -713,7 +695,7 @@ class TradingEngine {
         id: 'log_init',
         timestamp: new Date().toISOString(),
         type: 'ai_analysis',
-        message: 'مغز هوشمند Agent App با معماری Phase 1 (Unified Snapshot & Idempotency) آماده به کار شد.',
+        message: 'مغز هوشمند Agent App آماده به کار است. در انتظار دریافت اولین داده زنده MQL5 از متاتریدر ۵.',
       },
     ],
     isAgentActive: true,
@@ -772,35 +754,19 @@ class TradingEngine {
   }
 
   private runBackgroundAutonomousCheck() {
-    const now = new Date();
+    const now = Date.now();
+    const lastHb = this.state.bridgeStatus.lastHeartbeat
+      ? new Date(this.state.bridgeStatus.lastHeartbeat).getTime()
+      : 0;
+    const isConnected = lastHb > 0 && (now - lastHb) < 15000;
 
-    // 1. Maintain realistic tick updates if MT5 bridge is idle
-    if (!this.state.lastTick) {
-      this.state.lastTick = {
-        symbol: 'XAUUSD.m',
-        ask: 4107.81,
-        bid: 4106.50,
-        spread: 1.31,
-        timestamp: now.toISOString(),
-      };
-    } else {
-      const diffSec = (Date.now() - new Date(this.state.lastTick.timestamp).getTime()) / 1000;
-      if (diffSec > 4) {
-        const jitter = Number(((Math.random() - 0.49) * 0.40).toFixed(2));
-        const newAsk = Number((Math.max(1000, this.state.lastTick.ask + jitter)).toFixed(2));
-        const newBid = Number((newAsk - 1.31).toFixed(2));
-        this.state.lastTick = {
-          symbol: 'XAUUSD.m',
-          ask: newAsk,
-          bid: newBid,
-          spread: 1.31,
-          timestamp: now.toISOString(),
-        };
-      }
+    if (!isConnected) {
+      this.state.bridgeStatus.isConnected = false;
+      return;
     }
 
-    // 2. Perform Server-Side Autonomous Scalping Loop
-    if (this.autonomousTrading.enabled) {
+    // Perform Server-Side Autonomous Scalping Loop ONLY if connected and real tick exists
+    if (this.autonomousTrading.enabled && this.state.lastTick) {
       const elapsed = Date.now() - (this.autonomousTrading.startTime || Date.now());
       const durationMs = this.autonomousTrading.durationHours * 3600 * 1000;
 
@@ -1187,10 +1153,30 @@ class TradingEngine {
     reasoning: string;
     orderDispatched?: boolean;
   } {
-    const ask = this.state.lastTick?.ask || 4080.0;
-    const bid = this.state.lastTick?.bid || 4079.5;
-    const spread = this.state.lastTick?.spread || 0.5;
-    const symbol = this.state.lastTick?.symbol || 'XAUUSD';
+    if (!this.state.bridgeStatus.isConnected || !this.state.lastTick) {
+      return {
+        symbol: 'N/A',
+        stage1_marketState: 'در انتظار اتصال ربات MT5 - داده تیک زنده دریافت نشده است.',
+        stage2_marketRegime: 'حالت بازار نامشخص (ارتباط با متاتریدر ۵ قطع است)',
+        stage3_technicalAnalysis: 'تحلیل تکنیکال غیرفعال (نیاز به تیک زنده قیمت)',
+        stage4_fundamentalGuard: 'پایش اخبار فعال است (در انتظار قیمت زنده)',
+        stage5_scenarios: 'سناریوسازی غیرفعال تا زمان برقراری اولین اتصال زنده MQL5',
+        stage6_riskCalculations: 'حساب متصل نیست (موجودی: $0)',
+        stage7_preTradeChecklist: [
+          { check: 'ربات MQL5 به متاتریدر متصل است؟', passed: false },
+          { check: 'داده تیک قیمت زنده دریافت شده است؟', passed: false },
+        ],
+        stage8_decision: 'NO_TRADE',
+        recommendedLot: 0,
+        reasoning: 'به دلیل عدم برقراری اتصال زنده با ربات متاتریدر ۵، هیچ پوزیشن یا سفارشی صادر نمی‌شود.',
+        orderDispatched: false,
+      };
+    }
+
+    const ask = this.state.lastTick.ask;
+    const bid = this.state.lastTick.bid;
+    const spread = this.state.lastTick.spread;
+    const symbol = this.state.lastTick.symbol;
 
     // Stage 1: Market State
     const stage1 = `نماد: ${symbol} | قیمت Ask: ${ask} | قیمت Bid: ${bid} | اسپرد: ${spread} pips | تایم‌فریم‌های پایش‌شده: M1, M5, M15, H1, H4`;
@@ -1208,7 +1194,7 @@ class TradingEngine {
     const stage5 = `سناریو A (BUY): در صورت تایید مومنتوم و حفظ حمایت، ورود با TP: ${(ask + 3.0).toFixed(2)} و SL: ${(ask - 0.5).toFixed(2)}.\nسناریو B (SELL): در صورت شکست سطح حمایت با SL: ${(bid + 0.5).toFixed(2)}.\nسناریو C (NO TRADE): عدم وجود تاییدیه.`;
 
     // Stage 6: Risk Management
-    const stage6 = `با توجه به موجودی حساب (${this.state.bridgeStatus.accountInfo?.balance ?? 971.49} USD)، ریسک مجاز ۰.۵٪ سرمایه محاسبه شده و حجم پایه ۰.۰۱ لات تعیین گردید.`;
+    const stage6 = `با توجه به موجودی حساب (${this.state.bridgeStatus.accountInfo?.balance ?? 0} USD)، ریسک مجاز ۰.۵٪ سرمایه محاسبه شده و حجم پایه ۰.۰۱ لات تعیین گردید.`;
 
     // Stage 7: Checklist
     const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount || 0;
@@ -1285,8 +1271,8 @@ class TradingEngine {
 
     const executedOrders = filteredOrders.filter((ord) => ord.status === 'executed');
     const accountInfo = this.state.bridgeStatus.accountInfo;
-    const balance = accountInfo?.balance ?? 971.49;
-    const equity = accountInfo?.equity ?? 971.49;
+    const balance = accountInfo?.balance ?? 0;
+    const equity = accountInfo?.equity ?? 0;
     const floatingProfitUSD = accountInfo?.floatingProfit ?? (equity - balance);
     const dailyProfitUSD = accountInfo?.dailyProfit ?? 0;
 
@@ -1429,8 +1415,8 @@ class TradingEngine {
     }
 
     let reply = '';
-    const currentAsk = accState.lastTick?.ask || this.state.lastTick?.ask || 4107.81;
-    const currentBid = accState.lastTick?.bid || this.state.lastTick?.bid || 4106.50;
+    const currentAsk = accState.lastTick?.ask || this.state.lastTick?.ask || 0;
+    const currentBid = accState.lastTick?.bid || this.state.lastTick?.bid || 0;
     const currentBalance = accState.accountInfo.balance;
     const currentEquity = accState.accountInfo.equity;
     const accountNum = accState.config.accountNumber;
@@ -1653,29 +1639,29 @@ ${compactChatHistory.join('\n')}
     }
 
     // Return default baseline risk assessment if snapshot not yet arrived
-    const mockSnapshot: UnifiedSnapshot = {
+    const offlineSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
-      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
+      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
-      dataQuality: this.state.bridgeStatus.dataQuality || {
+      dataQuality: {
         lastTickAgeMs: 0,
-        isConnected: true,
-        isDataComplete: true,
-        latencyMs: 12,
+        isConnected: false,
+        isDataComplete: false,
+        latencyMs: 0,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: new Date().toISOString(),
+        lastSuccessfulSync: '',
         snapshotSequence: 0,
-        brokerServerTime: new Date().toISOString(),
+        brokerServerTime: '',
       },
     };
 
-    return riskEngine.evaluateRisk(mockSnapshot, this.state.riskRules, proposedOrder);
+    return riskEngine.evaluateRisk(offlineSnapshot, this.state.riskRules, proposedOrder);
   }
 
   public getTradingSignal(): TradingSignal {
@@ -1684,30 +1670,30 @@ ${compactChatHistory.join('\n')}
     }
 
     const mockAssessment = this.getRiskAssessment();
-    const mockSnapshot: UnifiedSnapshot = {
+    const offlineSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
-      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
+      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
       riskAssessment: mockAssessment,
-      dataQuality: this.state.bridgeStatus.dataQuality || {
+      dataQuality: {
         lastTickAgeMs: 0,
-        isConnected: true,
-        isDataComplete: true,
-        latencyMs: 12,
+        isConnected: false,
+        isDataComplete: false,
+        latencyMs: 0,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: new Date().toISOString(),
+        lastSuccessfulSync: '',
         snapshotSequence: 0,
-        brokerServerTime: new Date().toISOString(),
+        brokerServerTime: '',
       },
     };
 
-    return strategyEngine.evaluateStrategy(mockSnapshot);
+    return strategyEngine.evaluateStrategy(offlineSnapshot);
   }
 
   public async getAIAnalysis(): Promise<GeminiAIAnalysis> {
@@ -1718,31 +1704,31 @@ ${compactChatHistory.join('\n')}
 
     const mockAssessment = this.getRiskAssessment();
     const mockSignal = this.getTradingSignal();
-    const mockSnapshot: UnifiedSnapshot = {
+    const offlineSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
-      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
+      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
       riskAssessment: mockAssessment,
       strategySignal: mockSignal,
-      dataQuality: this.state.bridgeStatus.dataQuality || {
+      dataQuality: {
         lastTickAgeMs: 0,
-        isConnected: true,
-        isDataComplete: true,
-        latencyMs: 12,
+        isConnected: false,
+        isDataComplete: false,
+        latencyMs: 0,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: new Date().toISOString(),
+        lastSuccessfulSync: '',
         snapshotSequence: 0,
-        brokerServerTime: new Date().toISOString(),
+        brokerServerTime: '',
       },
     };
 
-    return geminiEngine.analyzeSnapshot(mockSnapshot, activeRules);
+    return geminiEngine.analyzeSnapshot(offlineSnapshot, activeRules);
   }
 
   public getExecutionResult(): ExecutionEngineResult {
@@ -1752,31 +1738,31 @@ ${compactChatHistory.join('\n')}
 
     const mockAssessment = this.getRiskAssessment();
     const mockSignal = this.getTradingSignal();
-    const mockSnapshot: UnifiedSnapshot = {
+    const offlineSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
-      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
+      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
       riskAssessment: mockAssessment,
       strategySignal: mockSignal,
-      dataQuality: this.state.bridgeStatus.dataQuality || {
+      dataQuality: {
         lastTickAgeMs: 0,
-        isConnected: true,
-        isDataComplete: true,
-        latencyMs: 12,
+        isConnected: false,
+        isDataComplete: false,
+        latencyMs: 0,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: new Date().toISOString(),
+        lastSuccessfulSync: '',
         snapshotSequence: 0,
-        brokerServerTime: new Date().toISOString(),
+        brokerServerTime: '',
       },
     };
 
-    return executionEngine.processExecution(mockSnapshot, this.state.isAgentActive);
+    return executionEngine.processExecution(offlineSnapshot, this.state.isAgentActive);
   }
 
   public getRecentTelemetry(): TelemetryRecord[] {
@@ -1796,12 +1782,12 @@ ${compactChatHistory.join('\n')}
     // 1. Extract Account Info
     const acc = payload.account || payload.accountInfo || {};
     const accountInfo: ExtendedAccountInfo = {
-      accountNumber: acc.accountNumber ?? this.state.bridgeStatus.accountInfo?.accountNumber ?? 9028145,
-      broker: acc.broker ?? this.state.bridgeStatus.accountInfo?.broker ?? '.Markets Ltd',
-      balance: acc.balance ?? this.state.bridgeStatus.accountInfo?.balance ?? 971.49,
-      equity: acc.equity ?? this.state.bridgeStatus.accountInfo?.equity ?? 971.49,
+      accountNumber: acc.accountNumber ?? this.state.bridgeStatus.accountInfo?.accountNumber ?? 0,
+      broker: acc.broker ?? this.state.bridgeStatus.accountInfo?.broker ?? 'MQL5 Broker',
+      balance: acc.balance ?? this.state.bridgeStatus.accountInfo?.balance ?? 0,
+      equity: acc.equity ?? this.state.bridgeStatus.accountInfo?.equity ?? 0,
       margin: acc.margin ?? this.state.bridgeStatus.accountInfo?.margin ?? 0,
-      freeMargin: acc.freeMargin ?? this.state.bridgeStatus.accountInfo?.freeMargin ?? 971.49,
+      freeMargin: acc.freeMargin ?? this.state.bridgeStatus.accountInfo?.freeMargin ?? 0,
       marginLevel: acc.marginLevel ?? (acc.margin > 0 ? (acc.equity / acc.margin) * 100 : 0),
       floatingProfit: acc.floatingProfit ?? (acc.equity - acc.balance),
       dailyProfit: acc.dailyProfit ?? 0,
@@ -1812,9 +1798,9 @@ ${compactChatHistory.join('\n')}
     };
 
     // 2. Extract Market State
-    const symbol = payload.symbol || payload.market?.symbol || 'XAUUSD.m';
-    const ask = payload.ask ?? payload.market?.ask ?? this.state.lastTick?.ask ?? 4107.81;
-    const bid = payload.bid ?? payload.market?.bid ?? this.state.lastTick?.bid ?? 4106.50;
+    const symbol = payload.symbol || payload.market?.symbol || 'N/A';
+    const ask = payload.ask ?? payload.market?.ask ?? this.state.lastTick?.ask ?? 0;
+    const bid = payload.bid ?? payload.market?.bid ?? this.state.lastTick?.bid ?? 0;
     const spread = payload.spread ?? payload.market?.spread ?? Math.round((ask - bid) * 100) / 100;
     const serverTimeStr = payload.serverTime || payload.market?.serverTime || now.toISOString();
 
@@ -1981,7 +1967,8 @@ ${compactChatHistory.join('\n')}
       const timeSinceLastOrder = Date.now() - (this.autonomousTrading.lastOrderTime || 0);
 
       if (openPositions < maxAllowedPositions && !hasPending && timeSinceLastOrder > 30000) {
-        const ask = this.state.lastTick?.ask || 4107.81;
+        const ask = this.state.lastTick?.ask;
+        if (!ask) return;
         const sl = Number((ask - 2.50).toFixed(2));
         const tp = Number((ask + 1.00).toFixed(2));
 

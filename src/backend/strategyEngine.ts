@@ -11,10 +11,30 @@ export class StrategyEngine {
    */
   public evaluateStrategy(snapshot: UnifiedSnapshot): TradingSignal {
     const market = snapshot.market;
-    const symbol = market.symbol || 'XAUUSD.m';
-    const ask = market.ask || 4107.81;
-    const bid = market.bid || 4106.50;
+    const symbol = market.symbol || 'N/A';
+    const ask = market.ask || 0;
+    const bid = market.bid || 0;
     const currentPrice = ask;
+
+    if (!ask || !bid) {
+      return {
+        id: 'sig_offline',
+        symbol,
+        action: 'HOLD',
+        timeframe: 'M1',
+        entryPrice: 0,
+        sl: 0,
+        tp: 0,
+        lot: 0.01,
+        confidenceScore: 0,
+        riskRewardRatio: 0,
+        confluenceReasons: ['ارتباط زنده MQL5 متاتریدر ۵ برقرار نیست.'],
+        htfTrend: 'NEUTRAL',
+        ltfSetup: 'NEUTRAL',
+        aiReasoning: 'در انتظار برقراری اولین اتصال زنده با متاتریدر ۵.',
+        generatedAt: new Date().toISOString(),
+      };
+    }
 
     const indicators = snapshot.indicators || {};
     const h1Ind: IndicatorValues | undefined = indicators.H1 || indicators.H4;

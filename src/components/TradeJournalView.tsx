@@ -107,10 +107,8 @@ export const TradeJournalView: React.FC<TradeJournalViewProps> = ({ activeAccoun
             onChange={(e) => setSelectedAccountId(e.target.value)}
             className="text-xs border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
           >
-            <option value="ALL">تمام حساب‌های متاتریدر</option>
-            <option value="MT5_9028145">طلا - اسکالپ هوشمند (9028145)</option>
-            <option value="MT5_1082391">بیتکوین - سوئینگ (1082391)</option>
-            <option value="MT5_3004812">یورو/دلار - روزانه (3004812)</option>
+            <option value="ALL">تمام حساب‌های زنده متاتریدر ۵</option>
+            {activeAccountId && <option value={activeAccountId}>حساب فعال فعلی ({activeAccountId})</option>}
           </select>
 
           <select
