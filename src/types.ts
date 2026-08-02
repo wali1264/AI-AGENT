@@ -557,3 +557,72 @@ export interface ChatCompletionResponse {
     agent_id: string;
   };
 }
+
+export type CopilotMode = 'COPILOT_ANALYST' | 'AUTO_PILOT' | 'ADVISOR' | 'BACKTEST';
+export type TradingStyle = 'SCALPING' | 'DAY_TRADING' | 'SWING' | 'CUSTOM';
+
+export interface CopilotConfig {
+  accountId: string;
+  mode: CopilotMode;
+  style: TradingStyle;
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  riskPercentPerTrade: number;
+  maxDailyDrawdownPercent: number;
+  maxTradesPerDay: number;
+  minRiskRewardRatio: number;
+  autoSlTpMode: 'AUTO_AI' | 'MANUAL_GUIDELINE';
+  preferredSymbols: string[];
+  expirationSeconds: number; // e.g. 30
+  autoExecuteOnHighConfidence: boolean;
+  minAutoExecuteConfidence: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TradeOpportunity {
+  id: string;
+  accountId: string;
+  symbol: string;
+  direction: 'BUY' | 'SELL' | 'WAIT';
+  confidence: number; // 0 - 100
+  winRate: number; // e.g. 82
+  entryZone: { min: number; max: number };
+  suggestedEntry: number;
+  stopLoss: number;
+  takeProfit: number;
+  lotSize: number;
+  riskRewardRatio: string; // e.g. "1:2.2"
+  estimatedProfitUsd: number;
+  estimatedRiskUsd: number;
+  style: TradingStyle;
+  timeframe: TimeframeType;
+  timestamp: string;
+  expiresAt: string; // ISO String
+  durationSeconds: number;
+  status: 'ACTIVE' | 'EXPIRED' | 'EXECUTED' | 'REJECTED';
+  reasons: {
+    trend: string;
+    structure: string;
+    indicators: string;
+    risk: string;
+  };
+  fullAnalysisText: string;
+  executedAt?: string;
+  executionPrice?: number;
+}
+
+export interface MarketScannerItem {
+  symbol: string;
+  nameFa: string;
+  price: number;
+  change24h: number;
+  trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  trendFa: string;
+  strengthScore: number; // 0 - 100
+  volatility: 'LOW' | 'MEDIUM' | 'HIGH';
+  volatilityFa: string;
+  bestOpportunitySignal?: 'BUY' | 'SELL' | 'WAIT';
+  confidence?: number;
+  lastUpdate: string;
+}
+

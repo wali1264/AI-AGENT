@@ -308,6 +308,81 @@ async function startServer() {
     }
   });
 
+  // Copilot & Analyst API Endpoints
+  app.get('/api/trading/copilot/config', (req: Request, res: Response) => {
+    try {
+      const accountId = req.query.accountId as string | undefined;
+      const config = tradingEngine.getCopilotConfig(accountId);
+      res.json({ status: 'ok', config });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/trading/copilot/config', (req: Request, res: Response) => {
+    try {
+      const { accountId, ...updates } = req.body;
+      const targetId = accountId || tradingEngine.getActiveAccountId();
+      const updated = tradingEngine.updateCopilotConfig(targetId, updates);
+      res.json({ status: 'ok', config: updated });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.get('/api/trading/copilot/opportunities', (req: Request, res: Response) => {
+    try {
+      const accountId = req.query.accountId as string | undefined;
+      const opportunities = tradingEngine.getCopilotOpportunities(accountId);
+      res.json({ status: 'ok', opportunities });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/trading/copilot/generate-opportunity', async (req: Request, res: Response) => {
+    try {
+      const { symbol, accountId, style } = req.body || {};
+      const opportunity = await tradingEngine.generateCopilotOpportunity(symbol, accountId, style);
+      res.json({ status: 'ok', opportunity });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/trading/copilot/execute-opportunity', async (req: Request, res: Response) => {
+    try {
+      const { opportunityId, accountId } = req.body || {};
+      const result = await tradingEngine.executeCopilotOpportunity(opportunityId, accountId);
+      if (result.success) {
+        res.json({ status: 'ok', ...result });
+      } else {
+        res.status(400).json({ status: 'error', message: result.error });
+      }
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/trading/copilot/reject-opportunity', (req: Request, res: Response) => {
+    try {
+      const { opportunityId, accountId } = req.body || {};
+      const success = tradingEngine.rejectCopilotOpportunity(opportunityId, accountId);
+      res.json({ status: 'ok', success });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.get('/api/trading/copilot/scanner', (req: Request, res: Response) => {
+    try {
+      const scannerData = tradingEngine.getMarketScannerData();
+      res.json({ status: 'ok', scanner: scannerData });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
   app.post('/api/trading/analyze', async (req: Request, res: Response) => {
     try {
       const signal = tradingEngine.getTradingSignal();

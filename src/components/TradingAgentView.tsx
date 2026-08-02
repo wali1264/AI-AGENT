@@ -37,6 +37,7 @@ import { TradingState, RiskRule, TradeOrder } from '../types';
 import { supabase } from '../lib/supabaseClient';
 import { MultiAccountManager } from './MultiAccountManager';
 import { TradeJournalView } from './TradeJournalView';
+import { TradingCopilotView } from './TradingCopilotView';
 
 interface TradingAgentViewProps {
   adminToken?: string | null;
@@ -514,7 +515,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [supabaseSql, setSupabaseSql] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('https://dqhujeggbndwcavzgnhm.supabase.co');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
-  const [activeSubTab, setActiveSubTab] = useState<'accounts' | 'journal' | 'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('accounts');
+  const [activeSubTab, setActiveSubTab] = useState<'copilot' | 'accounts' | 'journal' | 'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('copilot');
   const [activeAccountId, setActiveAccountId] = useState<string>('MT5_1200276147');
 
   // Customizable Risk Engine State
@@ -1302,6 +1303,19 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       {/* Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-gray-200 pb-2 overflow-x-auto">
         <button
+          onClick={() => setActiveSubTab('copilot')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'copilot'
+              ? 'bg-indigo-900 text-white shadow-md font-extrabold border border-indigo-700'
+              : 'text-indigo-900 bg-indigo-50/80 hover:bg-indigo-100'
+          }`}
+        >
+          <Bot className="w-4 h-4 text-indigo-400 animate-pulse" />
+          <span>دستیار و تحلیل‌گر هوشمند (AI Copilot)</span>
+          <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-400 text-slate-950 font-black">جدید</span>
+        </button>
+
+        <button
           onClick={() => setActiveSubTab('accounts')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'accounts'
@@ -1409,6 +1423,14 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           <span>حافظه و لاگ‌های ایجنت</span>
         </button>
       </div>
+
+      {/* SUB-TAB: AI Trading Copilot / Analyst */}
+      {activeSubTab === 'copilot' && (
+        <TradingCopilotView
+          activeAccountId={activeAccountId}
+          onRefreshState={fetchTradingState}
+        />
+      )}
 
       {/* SUB-TAB: Multi-Account Manager */}
       {activeSubTab === 'accounts' && (
