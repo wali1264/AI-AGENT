@@ -1343,6 +1343,66 @@ class TradingEngine {
     return keys;
   }
 
+  public getLiveTradingContextForAI(targetAccountId?: string): string {
+    const primaryId = targetAccountId || this.activeAccountId;
+    const accounts = this.getAccountsList();
+    const primaryAcc = this.getOrCreateAccountState(primaryId);
+
+    let summary = `\n==============================================\n`;
+    summary += `[اطلاعات لحظه‌ای و زنده حساب‌های متاتریدر ۵، چارت‌ها و پوزیشن‌های فعال]\n`;
+    summary += `حساب فعال هدف (Target Active Account): ${primaryId} (${primaryAcc.config.name || 'حساب اصلی'})\n`;
+    summary += `تعداد کل حساب‌های متاتریدر ثبت‌شده در سیستم: ${accounts.length}\n\n`;
+
+    summary += `لیست حساب‌ها و وضعیت اتصال:\n`;
+    for (const acc of accounts) {
+      const isCurrent = acc.accountId === primaryId ? ' [حساب فعال انتخاب شده]' : '';
+      summary += `- حساب ${acc.accountId} (${acc.name} - شماره حساب MT5: ${acc.accountNumber}, بروکر: ${acc.broker}): موجودی $${acc.balance?.toFixed(2) || '0'}, ارزش $${acc.equity?.toFixed(2) || '0'}, پوزیشن باز: ${acc.openPositionsCount}, وضعیت اتصال: ${acc.isConnected ? 'متصل و آنلاین MT5' : 'آماده به کار'}${isCurrent}\n`;
+    }
+
+    summary += `\n[جزئیات پوزیشن‌های باز و چارت‌های فعال حساب ${primaryId}]:\n`;
+    
+    if (primaryAcc.positions && primaryAcc.positions.length > 0) {
+      summary += `پوزیشن‌های باز فعال روی حساب ${primaryId} (${primaryAcc.positions.length} عدد):\n`;
+      primaryAcc.positions.forEach((p: any, idx: number) => {
+        const sym = p.symbol || 'XAUUSD.m';
+        const symUpper = sym.toUpperCase();
+        const symName = symUpper.includes('BTC') ? 'بیت‌کوین (Bitcoin / BTCUSD)' :
+                        symUpper.includes('XAU') ? 'طلا (Gold / XAUUSD)' :
+                        symUpper.includes('ETH') ? 'اتریوم (Ethereum / ETHUSD)' : sym;
+        summary += `  ${idx + 1}. تیکت #${p.ticket || p.id || idx + 1}: نماد ${sym} (${symName}) | نوع: ${p.direction || p.type} | حجم: ${p.lot} لات | قیمت ورود: ${p.entryPrice} | قیمت فعلی: ${p.currentPrice || '-'} | حد ضرر (SL): ${p.sl || 'تعیین نشده'} | حد سود (TP): ${p.tp || 'تعیین نشده'} | سود/زیان شناور: $${p.profit ?? '0.00'}\n`;
+      });
+    } else {
+      summary += `در حال حاضر هیچ پوزیشن بازی روی حساب ${primaryId} وجود ندارد.\n`;
+    }
+
+    // Dynamic active charts and symbols
+    const activeSymbolsSet = new Set<string>();
+    if (primaryAcc.lastTick?.symbol) activeSymbolsSet.add(primaryAcc.lastTick.symbol);
+    if (primaryAcc.positions) primaryAcc.positions.forEach((p: any) => p.symbol && activeSymbolsSet.add(p.symbol));
+    if (this.state.lastTick?.symbol) activeSymbolsSet.add(this.state.lastTick.symbol);
+    // Standard supported market symbols
+    ['BTCUSD', 'BTCUSD.m', 'XAUUSD', 'XAUUSD.m', 'EURUSD', 'GBPUSD', 'ETHUSD'].forEach(s => activeSymbolsSet.add(s));
+
+    summary += `\nنمادها و چارت‌های معاملاتی فعال و قابل دسترسی در این حساب:\n`;
+    activeSymbolsSet.forEach(sym => {
+      const symUpper = sym.toUpperCase();
+      const isGold = symUpper.includes('XAU');
+      const isBtc = symUpper.includes('BTC');
+      const isEth = symUpper.includes('ETH');
+      const label = isBtc ? 'بیت‌کوین (BTC/USD)' : isGold ? 'طلا (XAU/USD)' : isEth ? 'اتریوم (ETH/USD)' : sym;
+      
+      const ask = (primaryAcc.lastTick?.symbol === sym ? primaryAcc.lastTick.ask : null) || (this.state.lastTick?.symbol === sym ? this.state.lastTick.ask : null);
+      const bid = (primaryAcc.lastTick?.symbol === sym ? primaryAcc.lastTick.bid : null) || (this.state.lastTick?.symbol === sym ? this.state.lastTick.bid : null);
+      
+      summary += `- نماد ${sym} [${label}]: ${ask && bid ? `Ask: ${ask}, Bid: ${bid}` : 'چارت باز و آماده سفارش'}\n`;
+    });
+
+    summary += `\nپیام حیاتی برای سیستم AI: شما به تمام داده‌های زنده بالا، از جمله حساب‌های متاتریدر (شامل K1 و MT5)، چارت‌های بازشده (بیت‌کوین BTCUSD، طلا XAUUSD و فارکس) و پوزیشن‌ها دسترسی مستقیم کامل دارید. متاتریدر ۵ به شما متصل است.\n`;
+    summary += `==============================================\n`;
+
+    return summary;
+  }
+
   public async processAgentChat(userText: string, accountId?: string): Promise<{ reply: string; chatMessages: any[]; agentMemory: any[] }> {
     const targetAccountId = accountId || this.activeAccountId;
     const accState = this.getOrCreateAccountState(targetAccountId);
@@ -1382,6 +1442,9 @@ class TradingEngine {
     const stats24h = this.getTradeHistoryStats(24);
     const statsAll = this.getTradeHistoryStats();
 
+    // Comprehensive Live Multi-Account & Multi-Symbol Context
+    const liveMultiAccountContext = this.getLiveTradingContextForAI(targetAccountId);
+
     // Isolated Memory & Compact Context Window
     const accountMemories = this.getMemory(targetAccountId);
     const compactChatHistory = this.chatMessages.slice(-5).map((c) => `${c.sender === 'user' ? 'کاربر' : 'ایجنت'}: ${c.text}`);
@@ -1406,58 +1469,45 @@ class TradingEngine {
           });
 
           const contextPrompt = `
-تو ایجنت معامله‌گر واقعی و هوشمند هرمس (Hermes AI Trading Agent) هستی که بر روی حساب ایزوله زیر نظارت و کنترل داری:
-- شناسه حساب فعال: ${targetAccountId} (${accState.config.name})
+تو ایجنت معامله‌گر واقعی و هوشمند هرمس (Hermes AI Trading Agent) هستی که بر روی تمام حساب‌های متاتریدر ۵، چارت‌های فعال و پوزیشن‌ها نظارت و کنترل مستقیم داری.
+
+${liveMultiAccountContext}
+
+اطلاعات خلاصه حساب فعال فعلی (${targetAccountId} - ${accState.config.name}):
 - نوع استراتژی حساب: ${accState.config.strategyType}
 - پیام جدید کاربر: "${userText}"
-
-اطلاعات زنده و واقعی حساب و عملکرد معاملات:
-- موجودی حساب (Balance): $${currentBalance}
-- ارزش خالص (Equity): $${currentEquity}
-- سود/زیان شناور معاملات باز: $${(currentEquity - currentBalance).toFixed(2)}
+- موجودی حساب (Balance): $${currentBalance} | ارزش خالص (Equity): $${currentEquity}
+- سود/زیان شناور: $${(currentEquity - currentBalance).toFixed(2)}
 - شماره حساب: ${accountNum} نزد بروکر ${broker}
-- وضعیت اتصال به متاتریدر ۵: ${isBridgeConnected ? 'متصل' : 'آماده‌به‌کار'}
-- تعداد پوزیشن‌های باز همزمان فعلی: ${openPositions}
-- سقف مجاز پوزیشن‌های همزمان فعلی ایجنت: ${this.autonomousTrading.maxConcurrentPositions} (از ۱ تا ۵ پوزیشن)
-- قیمت خرید طلا (Ask): ${currentAsk} | قیمت فروش طلا (Bid): ${currentBid}
-- عملکرد و آمار معاملات ۱ ساعت اخیر: ${JSON.stringify(stats1h)}
-- عملکرد و آمار معاملات ۲۴ ساعت اخیر: ${JSON.stringify(stats24h)}
-- عملکرد کلی کل تاریخچه معاملات: ${JSON.stringify(statsAll)}
-- وضعیت فعلی ترید خودکار: ${
-            this.autonomousTrading.enabled
-              ? `فعال (تارگت سود: $${this.autonomousTrading.targetProfitUSD}، لات: ${this.autonomousTrading.lotSize}، سقف پوزیشن: ${this.autonomousTrading.maxConcurrentPositions}، باقی‌مانده: ${this.autonomousTrading.durationHours} ساعت)`
-              : 'غیرفعال'
-          }
+- وضعیت اتصال متاتریدر ۵: ${isBridgeConnected ? 'متصل' : 'آماده‌به‌کار'}
+- تعداد پوزیشن‌های باز این حساب: ${openPositions}
+- سقف مجاز پوزیشن‌های همزمان: ${this.autonomousTrading.maxConcurrentPositions}
+- قیمت طلا (Ask/Bid): ${currentAsk} / ${currentBid}
+- آمار معاملات ۲۴ ساعت گذشته: ${JSON.stringify(stats24h)}
 
-[حافظه بلندمدت اختصاصی و آموزه‌های ثبت‌شده این حساب]:
+[حافظه اختصاصی این حساب]:
 ${JSON.stringify(accountMemories.slice(0, 10))}
 
-[پنج گفتگو اخیر کاربر و ایجنت (فشرده‌سازی شده)]:
+[گفتگوهای اخیر]:
 ${compactChatHistory.join('\n')}
 
 دستورالعمل‌های حیاتی:
-1. تو یک هوش مصنوعی واقعی هستی. حافظه اختصاصی حساب ${targetAccountId} را کاملاً به یاد داشته باش.
-2. اگر کاربر درباره سود/زیان ۲۴ ساعت گذشته، ۱ ساعت گذشته یا تاریخچه معاملات پرسید، آمار واقعی بالایی را آنالیز کرده و اعداد دقیق سود/زیان دلار، سود شناور، تعداد پوزیشن‌ها و موجودی را با لحن حرفه‌ای و دقیق ارائه بده.
-3. اگر کاربر دستور تعیین سقف پوزیشن داد (مثلا فقط ۱ یا ۲ پوزیشن باز کن)، عدد "maxConcurrentPositions" را در پاسخ JSON قرار بده.
-4. بر اساس تحلیل پیام کاربر، ساختار JSON زیر را تولید کن:
+1. هرگز نگو به بیت‌کوین (BTCUSD) یا طلا (XAUUSD) یا حساب K1 دسترسی نداری! تو دسترسی مستقیم داری و داده‌های زنده آنها بالا قرار گرفته است.
+2. اگر کاربر درباره بیت‌کوین، طلا یا هر نماد دیگری صحبت کرد یا خواست پوزیشن باز/بست کند، نماد دقیق را در کلید "symbol" برگردان (مثلا "BTCUSD" یا "XAUUSD.m").
+3. پاسخ تخصصی، دقیق و کامل به زبان فارسی در کلید "reply" ارائه بده.
+4. بر اساس درخواست کاربر ساختار JSON زیر را برگردان:
 {
-  "reply": "متن پاسخ کامل، تحلیلی، تخصصی و مستقیم به کاربر به زبان فارسی",
-  "action": "CHAT" | "ENABLE_AUTONOMOUS" | "DISABLE_AUTONOMOUS" | "TRADE_BUY" | "TRADE_SELL" | "CLOSE_ALL" | "SAVE_MEMORY",
+  "reply": "متن پاسخ تحلیلی و مستقیم به کاربر به زبان فارسی",
+  "action": "CHAT" | "ENABLE_AUTONOMOUS" | "DISABLE_AUTONOMOUS" | "TRADE_BUY" | "TRADE_SELL" | "CLOSE_SYMBOL" | "CLOSE_ALL" | "SAVE_MEMORY",
+  "symbol": "BTCUSD" | "XAUUSD.m" | "EURUSD",
   "lot": 0.01,
+  "sl": 0,
+  "tp": 0,
   "maxConcurrentPositions": 5,
   "targetProfitUSD": 1.0,
   "durationHours": 8,
-  "memoryNote": "متن استراتژی یا قانون جهت ثبت در حافظه اختصاصی این حساب"
+  "memoryNote": "متن یادداشت جهت حافظه"
 }
-
-راهنمای تعیین action:
-- "ENABLE_AUTONOMOUS": اگر کاربر خواستار فعال‌سازی معامله خودکار شد.
-- "DISABLE_AUTONOMOUS": اگر کاربر خواستار توقف ترید خودکار شد.
-- "TRADE_BUY": اگر کاربر دستور خرید مستقیم طلا داد.
-- "TRADE_SELL": اگر کاربر دستور فروش مستقیم طلا داد.
-- "CLOSE_ALL": اگر کاربر دستور بستن همه پوزیشن‌ها را داد.
-- "SAVE_MEMORY": اگر کاربر قانون یا استراتژی جدیدی برای یادگیری داد.
-- "CHAT": برای استعلام‌های سود ۲۴ ساعته، موجودی، گزارش‌ها و گفتگوها.
 `;
 
           const response = await ai.models.generateContent({
@@ -1477,6 +1527,9 @@ ${compactChatHistory.join('\n')}
                 this.autonomousTrading.maxConcurrentPositions = parsed.maxConcurrentPositions;
                 this.updateMaxOpenPositionsRule(parsed.maxConcurrentPositions);
               }
+
+              // Determine symbol dynamically
+              const targetSymbol = parsed.symbol || (userText.toUpperCase().includes('BTC') ? 'BTCUSD' : userText.toUpperCase().includes('ETH') ? 'ETHUSD' : 'XAUUSD.m');
 
               if (parsed.action === 'ENABLE_AUTONOMOUS') {
                 const targetMaxPos = (parsed.maxConcurrentPositions && parsed.maxConcurrentPositions >= 1 && parsed.maxConcurrentPositions <= 5)
@@ -1498,44 +1551,42 @@ ${compactChatHistory.join('\n')}
 
                 await this.addMemoryNote(
                   'استراتژی اسکالپ خودکار',
-                  `معامله خودکار ${this.autonomousTrading.durationHours} ساعته توسط AI فعال شد. هدف سود: $${this.autonomousTrading.targetProfitUSD}، سقف پوزیشن همزمان: ${targetMaxPos}، حجم: ${this.autonomousTrading.lotSize} لات.`,
+                  `معامله خودکار ${this.autonomousTrading.durationHours} ساعته توسط AI روی ${targetSymbol} فعال شد. هدف سود: $${this.autonomousTrading.targetProfitUSD}، سقف پوزیشن: ${targetMaxPos}، لات: ${this.autonomousTrading.lotSize}.`,
                   targetAccountId
                 );
 
                 const currentSignal = this.getTradingSignal();
                 const initialType = currentSignal.action === 'SELL' ? 'SELL' : 'BUY';
-                const initialEntry = initialType === 'BUY' ? currentAsk : currentBid;
-                const sl = initialType === 'BUY' ? Number((initialEntry - 2.5).toFixed(2)) : Number((initialEntry + 2.5).toFixed(2));
-                const tp = initialType === 'BUY' ? Number((initialEntry + 1.0).toFixed(2)) : Number((initialEntry - 1.0).toFixed(2));
-
+                
                 this.createOrder({
-                  symbol: 'XAUUSD.m',
+                  symbol: targetSymbol,
                   type: initialType,
                   lot: parsed.lot || 0.01,
-                  sl,
-                  tp,
+                  sl: parsed.sl || undefined,
+                  tp: parsed.tp || undefined,
                   source: 'ai_agent',
+                  accountId: targetAccountId,
                 });
               } else if (parsed.action === 'DISABLE_AUTONOMOUS') {
                 this.autonomousTrading.enabled = false;
               } else if (parsed.action === 'TRADE_BUY' || parsed.action === 'TRADE_SELL') {
                 const type = parsed.action === 'TRADE_BUY' ? 'BUY' : 'SELL';
-                const sl = type === 'BUY' ? Number((currentAsk - 2.5).toFixed(2)) : Number((currentBid + 2.5).toFixed(2));
-                const tp = type === 'BUY' ? Number((currentAsk + 1.0).toFixed(2)) : Number((currentBid - 1.0).toFixed(2));
                 this.createOrder({
-                  symbol: 'XAUUSD.m',
+                  symbol: targetSymbol,
                   type,
                   lot: parsed.lot || 0.01,
-                  sl,
-                  tp,
+                  sl: parsed.sl || undefined,
+                  tp: parsed.tp || undefined,
                   source: 'ai_agent',
+                  accountId: targetAccountId,
                 });
-              } else if (parsed.action === 'CLOSE_ALL') {
+              } else if (parsed.action === 'CLOSE_SYMBOL' || parsed.action === 'CLOSE_ALL') {
                 this.createOrder({
-                  symbol: 'XAUUSD.m',
+                  symbol: targetSymbol,
                   type: 'CLOSE_ALL',
                   lot: 0.01,
                   source: 'user_manual',
+                  accountId: targetAccountId,
                 });
               }
 
@@ -1962,12 +2013,16 @@ ${compactChatHistory.join('\n')}
     tp?: number;
     source: 'ai_agent' | 'user_manual' | 'telegram';
     clientOrderId?: string;
+    accountId?: string;
   }): { success: boolean; order?: TradeOrder; error?: string } {
     const clientOrderId = orderInput.clientOrderId || `cid_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const targetAccountId = orderInput.accountId || this.activeAccountId;
+    const targetAcc = this.getOrCreateAccountState(targetAccountId);
 
     // Check Idempotency: Prevent duplicate execution if this order was already processed
     if (this.processedClientOrderIds.has(clientOrderId)) {
       const existingOrder =
+        targetAcc.pendingOrders.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId) ||
         this.state.pendingOrders.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId) ||
         this.state.orderHistory.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId);
       if (existingOrder) {
@@ -1999,13 +2054,15 @@ ${compactChatHistory.join('\n')}
       status: 'pending',
       createdAt: new Date().toISOString(),
       source: orderInput.source,
+      accountId: targetAccountId,
     };
 
+    targetAcc.pendingOrders.push(newOrder);
     this.state.pendingOrders.push(newOrder);
     supabaseService.logOrder(newOrder).catch(() => {});
     this.logTradingActivity(
       'order_dispatched',
-      `سفارش جدید ${newOrder.type} روی نماد ${newOrder.symbol} (حجم: ${newOrder.lot}) با شناسه ${clientOrderId} صادر و در صف ارسال قرار گرفت.`,
+      `سفارش جدید ${newOrder.type} روی نماد ${newOrder.symbol} (حجم: ${newOrder.lot}) با شناسه ${clientOrderId} در حساب ${targetAccountId} صادر و در صف ارسال قرار گرفت.`,
       newOrder
     );
 

@@ -666,8 +666,12 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     created_at: new Date().toISOString(),
   });
 
-  // New Order Form state
-  const [symbol, setSymbol] = useState('XAUUSD');
+  // New Order Form & Multi-Account state
+  const [multiAccountsList, setMultiAccountsList] = useState<any[]>([]);
+  const [orderAccountId, setOrderAccountId] = useState<string>('MT5_1200276147');
+  const [symbol, setSymbol] = useState('BTCUSD');
+  const [customSymbolInput, setCustomSymbolInput] = useState('');
+  const [isCustomSymbol, setIsCustomSymbol] = useState(false);
   const [orderType, setOrderType] = useState<'BUY' | 'SELL' | 'CLOSE_ALL'>('BUY');
   const [lot, setLot] = useState('0.01');
   const [sl, setSl] = useState('');
@@ -962,6 +966,20 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     }
   };
 
+  const fetchMultiAccounts = async () => {
+    try {
+      const res = await fetch('/api/multi-accounts');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.accounts && Array.isArray(data.accounts)) {
+          setMultiAccountsList(data.accounts);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch multi accounts:', err);
+    }
+  };
+
   const fetchSupabaseSql = async () => {
     try {
       const res = await fetch('/api/trading/supabase-sql');
@@ -977,7 +995,12 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   };
 
   useEffect(() => {
+    if (activeAccountId) setOrderAccountId(activeAccountId);
+  }, [activeAccountId]);
+
+  useEffect(() => {
     fetchTradingState();
+    fetchMultiAccounts();
     fetchRiskRules();
     fetchEaCode();
     fetchSupabaseSql();
@@ -988,6 +1011,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
     const interval = setInterval(() => {
       fetchTradingState();
+      fetchMultiAccounts();
       fetchAgentMemoryAndChat();
       fetchTelemetryData();
     }, 2500); // Live poll every 2.5s
@@ -1064,12 +1088,21 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     setOrderError(null);
     setOrderSuccess(null);
 
+    const activeSym = isCustomSymbol ? customSymbolInput.trim() : symbol;
+    if (!activeSym) {
+      setOrderError('لطفاً نماد معاملاتی را انتخاب یا وارد نمایید.');
+      return;
+    }
+
+    const targetAccId = orderAccountId || activeAccountId;
+
     try {
       const res = await fetch('/api/trading/order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          symbol,
+          accountId: targetAccId,
+          symbol: activeSym,
           type: orderType,
           lot: parseFloat(lot) || 0.01,
           sl: sl ? parseFloat(sl) : undefined,
@@ -1083,7 +1116,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       if (!res.ok) {
         setOrderError(data.error || 'خطا در ثبت سفارش');
       } else {
-        setOrderSuccess(`سفارش ${orderType} با موفقیت در صف ارسال به MT5 قرار گرفت.`);
+        setOrderSuccess(`سفارش ${orderType} روی نماد ${activeSym} (حساب ${targetAccId}) با موفقیت در صف ارسال به MT5 قرار گرفت.`);
         fetchTradingState();
       }
     } catch (err: unknown) {
@@ -1760,37 +1793,108 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
             )}
 
             <form onSubmit={handleSendOrder} className="space-y-4">
-              {/* Symbol & Order Type */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">نماد (Symbol)</label>
-                  <input
-                    type="text"
-                    value={symbol}
-                    onChange={(e) => setSymbol(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 focus:outline-none focus:border-blue-500"
-                    placeholder="XAUUSD"
-                    required
-                  />
-                </div>
+              {/* Account Selection */}
+              <div>
+                <label className="block text-xs font-bold text-gray-800 mb-1 flex items-center gap-1">
+                  <Globe className="w-3.5 h-3.5 text-blue-600" />
+                  <span>انتخاب شماره حساب (Account Number)</span>
+                </label>
+                <select
+                  value={orderAccountId}
+                  onChange={(e) => {
+                    const accId = e.target.value;
+                    setOrderAccountId(accId);
+                    setActiveAccountId(accId);
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-900 bg-slate-50 focus:outline-none focus:border-blue-500 shadow-sm"
+                >
+                  {multiAccountsList.length > 0 ? (
+                    multiAccountsList.map((acc: any) => (
+                      <option key={acc.accountId} value={acc.accountId}>
+                        {acc.accountId} ({acc.name}) {acc.accountNumber ? ` - #${acc.accountNumber}` : ''} - موجودی: ${acc.balance?.toFixed(2) || '0'}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={activeAccountId}>{activeAccountId} (حساب فعال پیش‌فرض)</option>
+                  )}
+                </select>
+              </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">نوع سفارش</label>
-                  <select
-                    value={orderType}
-                    onChange={(e) => setOrderType(e.target.value as any)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs text-gray-900 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="BUY">خرید (BUY)</option>
-                    <option value="SELL">فروش (SELL)</option>
-                    <option value="CLOSE_ALL">بستن همه پوزیشن‌ها (CLOSE ALL)</option>
-                  </select>
+              {/* Symbol Selection Dropdown ("منوی کشویی / کشوری انتخاب نماد") & Order Type */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-gray-800 flex items-center gap-1">
+                  <Compass className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>منوی کشویی انتخاب نماد (Symbol Country Menu)</span>
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <select
+                      value={isCustomSymbol ? 'CUSTOM' : symbol}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'CUSTOM') {
+                          setIsCustomSymbol(true);
+                        } else {
+                          setIsCustomSymbol(false);
+                          setSymbol(val);
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono font-bold text-gray-900 bg-white focus:outline-none focus:border-emerald-500 shadow-sm"
+                    >
+                      <optgroup label="🪙 ارزهای دیجیتال (Crypto)">
+                        <option value="BTCUSD">BTCUSD - بیت‌کوین (Bitcoin)</option>
+                        <option value="BTCUSD.m">BTCUSD.m - بیت‌کوین بروکر (Macro)</option>
+                        <option value="ETHUSD">ETHUSD - اتریوم (Ethereum)</option>
+                        <option value="SOLUSD">SOLUSD - سولانا (Solana)</option>
+                      </optgroup>
+                      <optgroup label="🥇 فلزات و کالاها (Metals & Energy)">
+                        <option value="XAUUSD">XAUUSD - طلا (Gold)</option>
+                        <option value="XAUUSD.m">XAUUSD.m - طلا بروکر (Broker Gold)</option>
+                        <option value="XAGUSD">XAGUSD - نقره (Silver)</option>
+                        <option value="USOIL">USOIL - نفت خام (Crude Oil)</option>
+                      </optgroup>
+                      <optgroup label="💱 جفت‌ارزهای اصلی فارکس (Forex Majors)">
+                        <option value="EURUSD">EURUSD - یورو / دلار</option>
+                        <option value="GBPUSD">GBPUSD - پوند انگلیس / دلار</option>
+                        <option value="USDJPY">USDJPY - دلار / ین ژاپن</option>
+                        <option value="AUDUSD">AUDUSD - دلار استرالیا / دلار</option>
+                        <option value="USDCAD">USDCAD - دلار / دلار کانادا</option>
+                      </optgroup>
+                      <optgroup label="✏️ گزینه سفارشی">
+                        <option value="CUSTOM">تایپ نماد اختصاصی دیگر...</option>
+                      </optgroup>
+                    </select>
+
+                    {isCustomSymbol && (
+                      <input
+                        type="text"
+                        placeholder="نام نماد مثلاً: BTCUSD"
+                        value={customSymbolInput}
+                        onChange={(e) => setCustomSymbolInput(e.target.value.toUpperCase())}
+                        className="w-full mt-2 px-3 py-1.5 border border-amber-300 rounded-lg text-xs font-mono text-gray-900 bg-amber-50 focus:outline-none focus:border-amber-500"
+                        required
+                      />
+                    )}
+                  </div>
+
+                  <div>
+                    <select
+                      value={orderType}
+                      onChange={(e) => setOrderType(e.target.value as any)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-900 bg-white focus:outline-none focus:border-blue-500 shadow-sm"
+                    >
+                      <option value="BUY">🟢 خرید مستقیم (BUY)</option>
+                      <option value="SELL">🔴 فروش مستقیم (SELL)</option>
+                      <option value="CLOSE_ALL">⚠️ بستن همه پوزیشن‌ها (CLOSE ALL)</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
               {/* Lot Size, SL, TP */}
               {orderType !== 'CLOSE_ALL' && (
-                <div className="space-y-3">
+                <div className="space-y-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">حجم معامله (Lot)</label>
                     <input
@@ -1809,10 +1913,10 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                       <label className="block text-xs font-medium text-gray-700 mb-1">حد ضرر (Stop Loss)</label>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         value={sl}
                         onChange={(e) => setSl(e.target.value)}
-                        placeholder="مثال: 2640.00"
+                        placeholder="اختیاری"
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -1821,10 +1925,10 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                       <label className="block text-xs font-medium text-gray-700 mb-1">حد سود (Take Profit)</label>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         value={tp}
                         onChange={(e) => setTp(e.target.value)}
-                        placeholder="مثال: 2680.00"
+                        placeholder="اختیاری"
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -1834,7 +1938,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
               <button
                 type="submit"
-                className={`w-full py-2.5 rounded-lg text-xs font-bold text-white transition-colors flex items-center justify-center gap-2 ${
+                className={`w-full py-2.5 rounded-lg text-xs font-bold text-white transition-colors flex items-center justify-center gap-2 shadow-sm ${
                   orderType === 'BUY'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
                     : orderType === 'SELL'
@@ -1843,7 +1947,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                 }`}
               >
                 <Zap className="w-4 h-4" />
-                <span>ارسال سفارش به صف اجرا ({orderType})</span>
+                <span>ارسال و تست سفارش دستی ({orderType})</span>
               </button>
             </form>
           </div>

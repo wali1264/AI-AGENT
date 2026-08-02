@@ -12,6 +12,7 @@ import {
   RequestLog,
 } from '../types.js';
 import { store } from './store.js';
+import { tradingEngine } from './tradingEngine.js';
 
 let roundRobinIndex = 0;
 
@@ -304,10 +305,18 @@ export class RouterEngine {
 
     const userMessages = reqBody.messages || [];
 
-    // Extract system instructions and combines with Agent System Prompt Overlay
+    // Extract system instructions and combines with Agent System Prompt Overlay and Live MT5 Trading Context
     const systemParts: string[] = [];
     if (agentProfile.systemPrompt) {
       systemParts.push(String(agentProfile.systemPrompt).normalize('NFC'));
+    }
+
+    // Always inject live MetaTrader 5 account and chart symbols context
+    try {
+      const liveContext = tradingEngine.getLiveTradingContextForAI();
+      if (liveContext) systemParts.push(liveContext);
+    } catch (e) {
+      console.warn('Failed to generate live context for router engine:', e);
     }
 
     const filteredMessages: ChatMessage[] = [];
