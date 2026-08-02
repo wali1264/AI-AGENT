@@ -277,6 +277,16 @@ async function startServer() {
     }
   });
 
+  app.delete('/api/multi-accounts/:accountId', (req: Request, res: Response) => {
+    try {
+      const { accountId } = req.params;
+      const success = tradingEngine.deleteAccount(accountId);
+      res.json({ status: 'ok', success, activeAccountId: tradingEngine.getActiveAccountId() });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
   // Phase 2: Trade Journal API Endpoints
   app.get('/api/trade-journal', (req: Request, res: Response) => {
     try {

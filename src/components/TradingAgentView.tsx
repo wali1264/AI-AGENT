@@ -515,7 +515,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [supabaseUrl, setSupabaseUrl] = useState<string>('https://dqhujeggbndwcavzgnhm.supabase.co');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
   const [activeSubTab, setActiveSubTab] = useState<'accounts' | 'journal' | 'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('accounts');
-  const [activeAccountId, setActiveAccountId] = useState<string>('MT5_9028145');
+  const [activeAccountId, setActiveAccountId] = useState<string>('MT5_1200276147');
 
   // Customizable Risk Engine State
   const [riskRules, setRiskRules] = useState<RiskRule[]>([]);

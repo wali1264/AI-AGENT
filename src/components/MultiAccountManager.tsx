@@ -13,6 +13,7 @@ import {
   Check,
   Building2,
   BookOpen,
+  Trash2,
 } from 'lucide-react';
 
 export interface MultiAccountConfig {
@@ -89,6 +90,28 @@ export const MultiAccountManager: React.FC<MultiAccountManagerProps> = ({
       }
     } catch (err) {
       console.error('Failed to select account:', err);
+    }
+  };
+
+  const handleDeleteAccount = async (accountId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (accounts.length <= 1) {
+      alert('حداقل یک حساب باید در سیستم باقی بماند.');
+      return;
+    }
+    if (!window.confirm('آیا از حذف این حساب اطمینان دارید؟')) return;
+
+    try {
+      const res = await fetch(`/api/multi-accounts/${accountId}`, { method: 'DELETE' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.activeAccountId) {
+          onAccountSelect(data.activeAccountId);
+        }
+        await fetchAccounts();
+      }
+    } catch (err) {
+      console.error('Failed to delete account:', err);
     }
   };
 
@@ -274,13 +297,24 @@ export const MultiAccountManager: React.FC<MultiAccountManagerProps> = ({
                   : 'bg-gray-50/70 border-gray-200 hover:border-gray-300 hover:bg-gray-100/60'
               }`}
             >
-              {/* Active Badge */}
-              {isActive && (
-                <div className="absolute top-3 left-3 bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
-                  <Check className="w-3 h-3" />
-                  حساب فعال UI
-                </div>
-              )}
+              {/* Top Left Controls: Active Badge & Delete Button */}
+              <div className="absolute top-3 left-3 flex items-center gap-1.5">
+                {isActive && (
+                  <div className="bg-blue-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <Check className="w-3 h-3" />
+                    حساب فعال UI
+                  </div>
+                )}
+                {accounts.length > 1 && (
+                  <button
+                    onClick={(e) => handleDeleteAccount(acc.accountId, e)}
+                    className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                    title="حذف این حساب"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
 
               <div className="flex items-center gap-2 mb-2">
                 <div className={`p-1.5 rounded-lg ${isActive ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600'}`}>

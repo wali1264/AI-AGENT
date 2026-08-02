@@ -271,9 +271,24 @@ class TradingEngine {
   }
 
   public initDefaultAccounts() {
-    this.getOrCreateAccountState('MT5_9028145', 9028145, '.Markets Ltd', 'طلا - اسکالپ هوشمند', 'SURFING');
-    this.getOrCreateAccountState('MT5_1082391', 1082391, 'Exness Global', 'بیتکوین - سوئینگ', 'SWING');
-    this.getOrCreateAccountState('MT5_3004812', 3004812, 'ICMarkets', 'یورو/دلار - روزانه', 'INTRADAY');
+    if (this.accountsMap.size === 0) {
+      this.getOrCreateAccountState('MT5_1200276147', 1200276147, 'Just Global Markets Ltd.', 'حساب متاتریدر 1200276147', 'SURFING');
+      this.activeAccountId = 'MT5_1200276147';
+    }
+  }
+
+  public deleteAccount(accountId: string): boolean {
+    if (this.accountsMap.has(accountId)) {
+      this.accountsMap.delete(accountId);
+      if (this.activeAccountId === accountId) {
+        const remaining = Array.from(this.accountsMap.keys());
+        if (remaining.length > 0) {
+          this.switchActiveAccount(remaining[0]);
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   public getAccountsList() {
@@ -1572,8 +1587,10 @@ ${compactChatHistory.join('\n')}
     this.latestUnifiedSnapshot = unifiedSnapshot;
     this.initialSyncCompleted = true;
 
-    // Synchronize current UI active state if target account matches activeAccountId
-    if (targetAccountId === this.activeAccountId) {
+    // Synchronize current UI active state if target account matches activeAccountId or active account is disconnected
+    const currentActiveState = this.accountsMap.get(this.activeAccountId);
+    if (targetAccountId === this.activeAccountId || !currentActiveState?.bridgeStatus.isConnected) {
+      this.activeAccountId = targetAccountId;
       this.state.bridgeStatus.isConnected = true;
       this.state.bridgeStatus.lastHeartbeat = now.toISOString();
       this.state.bridgeStatus.latencyMs = latencyMs;
