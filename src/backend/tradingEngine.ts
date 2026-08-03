@@ -22,15 +22,6 @@ import {
   ExecutionEngineResult,
   PositionModificationRequest,
   TelemetryRecord,
-  MultiAccountConfig,
-  MultiAccountState,
-  TradeJournalEntry,
-  AgentKnowledgeRule,
-  CopilotConfig,
-  TradeOpportunity,
-  MarketScannerItem,
-  CopilotMode,
-  TradingStyle,
 } from '../types.js';
 import { supabaseService } from './supabaseClient.js';
 import { GoogleGenAI } from '@google/genai';
@@ -96,14 +87,6 @@ export const DEFAULT_AGENT_SYSTEM_PROMPT = `شخصیت و هویت ایجنت م
 
 const INITIAL_RISK_RULES: RiskRule[] = [
   {
-    id: 'enable_risk_guard',
-    name: 'فعال‌سازی کلی نظارت موتور ریسک',
-    description: 'در صورت فعال بودن، تمام قوانین و محدودیت‌های ریسک قبل از معامله بررسی می‌شوند.',
-    isEnabled: true,
-    value: 1,
-    unit: 'boolean',
-  },
-  {
     id: 'max_risk_per_trade',
     name: 'حداکثر ریسک هر معامله',
     description: 'درصد مجاز ریسک از موجودی (Equity) برای هر پوزیشن جدید',
@@ -114,7 +97,7 @@ const INITIAL_RISK_RULES: RiskRule[] = [
   {
     id: 'max_daily_drawdown',
     name: 'حداکثر افت روزانه حساب (Daily Loss)',
-    description: 'سقف درصد زیان روزانه متوالی قبل از توقف خودکار ربات',
+    description: 'سقف زیان روزانه متوالی قبل از توقف خودکار ربات',
     isEnabled: true,
     value: 3.0,
     unit: 'percentage',
@@ -122,7 +105,7 @@ const INITIAL_RISK_RULES: RiskRule[] = [
   {
     id: 'max_lot_size',
     name: 'حداکثر حجم معامله (Max Lot)',
-    description: 'سقف مجاز لات برای هر سفارش ارسالی به متاتریدر',
+    description: 'سقف مجاز لات برای هر سفارش ارسالی',
     isEnabled: true,
     value: 0.1,
     unit: 'lot',
@@ -130,25 +113,9 @@ const INITIAL_RISK_RULES: RiskRule[] = [
   {
     id: 'max_open_positions',
     name: 'حداکثر پوزیشن‌های همزمان باز',
-    description: 'تعداد مجاز معاملات باز همزمان روی متاتریدر (۱ تا ۵ پوزیشن)',
+    description: 'تعداد مجاز معاملات باز همزمان روی متاتریدر',
     isEnabled: true,
-    value: 5,
-    unit: 'usd',
-  },
-  {
-    id: 'max_spread_limit',
-    name: 'حداکثر اسپرد مجاز نماد (Max Spread)',
-    description: 'سقف قابل قبول اسپرد نماد معامله (به پوینت/پیپ)',
-    isEnabled: true,
-    value: 50,
-    unit: 'usd',
-  },
-  {
-    id: 'max_tick_age_ms',
-    name: 'حداکثر تاخیر داده‌ها (Tick Age)',
-    description: 'حداکثر زمان مجاز از آخرین تیک دریافتی (میلی‌ثانیه)',
-    isEnabled: true,
-    value: 10000,
+    value: 2,
     unit: 'usd',
   },
   {
@@ -159,14 +126,6 @@ const INITIAL_RISK_RULES: RiskRule[] = [
     value: 1,
     unit: 'boolean',
   },
-  {
-    id: 'min_margin_level',
-    name: 'حداقل سطح مارجین ایمن (Margin Level)',
-    description: 'حداقل درصد مارجین لول حساب برای اجازه معامله جدید',
-    isEnabled: true,
-    value: 150,
-    unit: 'percentage',
-  },
 ];
 
 class TradingEngine {
@@ -176,488 +135,6 @@ class TradingEngine {
   private initialSyncCompleted: boolean = false;
   private latestUnifiedSnapshot: UnifiedSnapshot | null = null;
 
-  private accountsMap: Map<string, MultiAccountState> = new Map();
-  private activeAccountId: string = '';
-  private knowledgeRules: AgentKnowledgeRule[] = [];
-
-  private copilotConfigs: Map<string, CopilotConfig> = new Map();
-  private copilotOpportunities: Map<string, TradeOpportunity[]> = new Map();
-
-  public getOrCreateAccountState(
-    accountId: string,
-    accountNumber?: number,
-    broker?: string,
-    name?: string,
-    strategyType?: MultiAccountConfig['strategyType']
-  ): MultiAccountState {
-    const accNum = accountNumber || (accountId.startsWith('MT5_') ? parseInt(accountId.replace('MT5_', '')) || 0 : 0);
-    
-    if (!this.accountsMap.has(accountId)) {
-      const defaultState: MultiAccountState = {
-        config: {
-          accountId,
-          accountNumber: accNum,
-          broker: broker || 'در انتظار اتصال MT5',
-          name: name || (accNum > 0 ? `حساب متاتریدر ${accNum}` : `حساب غیرفعال ${accountId}`),
-          strategyType: strategyType || 'SURFING',
-          isEnabled: true,
-          assignedAgentName: 'Hermes Agent',
-          riskRules: JSON.parse(JSON.stringify(INITIAL_RISK_RULES)),
-          trailingStopConfig: {
-            enableBreakeven: true,
-            breakevenProfitDistance: 1.5,
-            enableTrailingStop: true,
-            trailingStep: 1.2,
-            minTrailActivationProfit: 2.0,
-          },
-          createdAt: new Date().toISOString(),
-          lastActiveAt: new Date().toISOString(),
-        },
-        accountInfo: {
-          accountNumber: accNum,
-          broker: broker || 'در انتظار اتصال MT5',
-          balance: 0,
-          equity: 0,
-          margin: 0,
-          freeMargin: 0,
-          openPositionsCount: 0,
-          currency: 'USD',
-        },
-        positions: [],
-        pendingOrders: [],
-        orderHistory: [],
-        tradingLogs: [
-          {
-            id: `log_init_${accountId}`,
-            timestamp: new Date().toISOString(),
-            type: 'ai_analysis',
-            message: `حساب ${accountId} آماده دریافت اطلاعات زنده از متاتریدر ۵ است.`,
-          },
-        ],
-        bridgeStatus: {
-          isConnected: false,
-          lastHeartbeat: null,
-          latencyMs: 0,
-          initialSyncCompleted: false,
-          accountInfo: {
-            accountNumber: accNum,
-            broker: broker || 'در انتظار اتصال MT5',
-            balance: 0,
-            equity: 0,
-            margin: 0,
-            freeMargin: 0,
-            openPositionsCount: 0,
-            currency: 'USD',
-          },
-          dataQuality: {
-            lastTickAgeMs: 0,
-            isConnected: false,
-            isDataComplete: false,
-            latencyMs: 0,
-            serverTime: new Date().toISOString(),
-            localTime: new Date().toISOString(),
-            lastSuccessfulSync: new Date().toISOString(),
-            snapshotSequence: 0,
-            brokerServerTime: new Date().toISOString(),
-          },
-        },
-        lastTick: null,
-        journalEntries: [],
-        memory: [],
-      };
-      this.accountsMap.set(accountId, defaultState);
-    }
-    return this.accountsMap.get(accountId)!;
-  }
-
-  public initDefaultAccounts() {
-    // No fake accounts created automatically. Accounts are created dynamically when MT5 EA connects.
-  }
-
-  public deleteAccount(accountId: string): boolean {
-    if (this.accountsMap.has(accountId)) {
-      this.accountsMap.delete(accountId);
-      if (this.activeAccountId === accountId) {
-        const remaining = Array.from(this.accountsMap.keys());
-        if (remaining.length > 0) {
-          this.switchActiveAccount(remaining[0]);
-        }
-      }
-      return true;
-    }
-    return false;
-  }
-
-  public getAccountsList() {
-    const result: any[] = [];
-    const now = Date.now();
-    for (const [accId, accState] of this.accountsMap.entries()) {
-      const lastHb = accState.bridgeStatus.lastHeartbeat
-        ? new Date(accState.bridgeStatus.lastHeartbeat).getTime()
-        : 0;
-      const isConnected = lastHb > 0 && (now - lastHb) < 15000;
-
-      result.push({
-        ...accState.config,
-        balance: isConnected ? accState.accountInfo.balance : accState.accountInfo.balance,
-        equity: isConnected ? accState.accountInfo.equity : accState.accountInfo.equity,
-        openPositionsCount: isConnected ? accState.positions.length : 0,
-        isConnected,
-        isActive: accId === this.activeAccountId,
-        journalEntriesCount: accState.journalEntries.length,
-        lastHeartbeat: accState.bridgeStatus.lastHeartbeat,
-      });
-    }
-    return result;
-  }
-
-  public getLiveSymbolsList(): { symbol: string; source: string; lastPrice?: number }[] {
-    const symbolsMap = new Map<string, { symbol: string; source: string; lastPrice?: number }>();
-    const now = Date.now();
-
-    for (const [accId, accState] of this.accountsMap.entries()) {
-      const lastHb = accState.bridgeStatus.lastHeartbeat
-        ? new Date(accState.bridgeStatus.lastHeartbeat).getTime()
-        : 0;
-      const isConnected = lastHb > 0 && (now - lastHb) < 15000;
-
-      if (isConnected && accState.lastTick?.symbol) {
-        symbolsMap.set(accState.lastTick.symbol, {
-          symbol: accState.lastTick.symbol,
-          source: `چارت زنده MT5 (#${accState.accountInfo.accountNumber || accId})`,
-          lastPrice: accState.lastTick.ask || accState.lastTick.bid,
-        });
-      }
-
-      if (isConnected) {
-        for (const pos of accState.positions) {
-          if (pos.symbol && !symbolsMap.has(pos.symbol)) {
-            symbolsMap.set(pos.symbol, {
-              symbol: pos.symbol,
-              source: `پوزیشن باز زنده (#${pos.ticket})`,
-              lastPrice: pos.entryPrice,
-            });
-          }
-        }
-      }
-    }
-
-    if (this.state.bridgeStatus.isConnected && this.state.lastTick?.symbol) {
-      if (!symbolsMap.has(this.state.lastTick.symbol)) {
-        symbolsMap.set(this.state.lastTick.symbol, {
-          symbol: this.state.lastTick.symbol,
-          source: 'چارت زنده متاتریدر ۵',
-          lastPrice: this.state.lastTick.ask,
-        });
-      }
-    }
-
-    return Array.from(symbolsMap.values());
-  }
-
-  public switchActiveAccount(accountId: string): boolean {
-    if (!this.accountsMap.has(accountId)) {
-      this.getOrCreateAccountState(accountId);
-    }
-    this.activeAccountId = accountId;
-    const accState = this.accountsMap.get(accountId)!;
-    this.state.bridgeStatus.accountInfo = accState.accountInfo;
-    this.state.riskRules = accState.config.riskRules;
-    this.logTradingActivity('ai_analysis', `حساب فعال UI به ${accountId} تغییر یافت.`);
-    return true;
-  }
-
-  public getActiveAccountId(): string {
-    return this.activeAccountId;
-  }
-
-  public getAccountState(accountId?: string): MultiAccountState {
-    const targetId = accountId || this.activeAccountId;
-    return this.getOrCreateAccountState(targetId);
-  }
-
-  public async addTradeJournalEntry(entryInput: Partial<TradeJournalEntry>, accountId?: string): Promise<TradeJournalEntry> {
-    const targetId = accountId || entryInput.accountId || this.activeAccountId;
-    const accState = this.getOrCreateAccountState(targetId);
-    
-    const entry: TradeJournalEntry = {
-      id: entryInput.id || `jrn_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      accountId: targetId,
-      accountNumber: accState.config.accountNumber,
-      symbol: entryInput.symbol || accState.lastTick?.symbol || 'XAUUSD.m',
-      timeframe: entryInput.timeframe || 'M15',
-      timestamp: entryInput.timestamp || new Date().toISOString(),
-      ask: entryInput.ask || accState.lastTick?.ask || 0,
-      bid: entryInput.bid || accState.lastTick?.bid || 0,
-      spread: entryInput.spread || accState.lastTick?.spread || 0,
-      candlesSummary: entryInput.candlesSummary,
-      indicatorsSnapshot: entryInput.indicatorsSnapshot,
-      decision: entryInput.decision || 'HOLD',
-      confidence: entryInput.confidence || 80,
-      persianAnalysis: entryInput.persianAnalysis || 'تحلیل ثبت شده در ژورنال معاملات هرمس',
-      englishAnalysis: entryInput.englishAnalysis || 'Trade journal entry logged by Hermes AI Engine',
-      confluenceReasons: entryInput.confluenceReasons || [],
-      orderType: entryInput.orderType,
-      lot: entryInput.lot,
-      entryPrice: entryInput.entryPrice,
-      sl: entryInput.sl,
-      tp: entryInput.tp,
-      exitPrice: entryInput.exitPrice,
-      exitTime: entryInput.exitTime,
-      pnlUsd: entryInput.pnlUsd,
-      pnlPoints: entryInput.pnlPoints,
-      status: entryInput.status || 'PROPOSED',
-      executionError: entryInput.executionError,
-      strategyName: entryInput.strategyName || accState.config.strategyType,
-      riskScore: entryInput.riskScore || 85,
-      newsFilterPassed: entryInput.newsFilterPassed ?? true,
-    };
-
-    accState.journalEntries.unshift(entry);
-    if (accState.journalEntries.length > 300) {
-      accState.journalEntries.pop();
-    }
-
-    await supabaseService.logTradeJournal(entry);
-    return entry;
-  }
-
-  public getTradeJournalEntries(accountId?: string): TradeJournalEntry[] {
-    const targetId = accountId || this.activeAccountId;
-    const accState = this.getOrCreateAccountState(targetId);
-    return accState.journalEntries;
-  }
-
-  // ==========================================
-  // AI TRADING COPILOT & ANALYST ENGINE METHODS
-  // ==========================================
-
-  public getCopilotConfig(accountId?: string): CopilotConfig {
-    const targetId = accountId || this.activeAccountId;
-    if (!this.copilotConfigs.has(targetId)) {
-      const defaultConfig: CopilotConfig = {
-        accountId: targetId,
-        mode: 'COPILOT_ANALYST',
-        style: 'SCALPING',
-        riskLevel: 'LOW',
-        riskPercentPerTrade: 1.0,
-        maxDailyDrawdownPercent: 3.0,
-        maxTradesPerDay: 5,
-        minRiskRewardRatio: 2.0,
-        autoSlTpMode: 'AUTO_AI',
-        preferredSymbols: ['XAUUSD', 'EURUSD', 'BTCUSD', 'GBPUSD', 'USDJPY'],
-        expirationSeconds: 30,
-        autoExecuteOnHighConfidence: false,
-        minAutoExecuteConfidence: 90,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      this.copilotConfigs.set(targetId, defaultConfig);
-    }
-    return this.copilotConfigs.get(targetId)!;
-  }
-
-  public updateCopilotConfig(accountId: string, updates: Partial<CopilotConfig>): CopilotConfig {
-    const current = this.getCopilotConfig(accountId);
-    const updated: CopilotConfig = {
-      ...current,
-      ...updates,
-      updatedAt: new Date().toISOString(),
-    };
-    this.copilotConfigs.set(accountId, updated);
-    this.logTradingActivity('ai_analysis', `تنظیمات دستیار کوپایلت برای حساب ${accountId} به روز شد.`);
-    return updated;
-  }
-
-  public getCopilotOpportunities(accountId?: string): TradeOpportunity[] {
-    const targetId = accountId || this.activeAccountId;
-    if (!this.copilotOpportunities.has(targetId)) {
-      this.copilotOpportunities.set(targetId, []);
-    }
-    const list = this.copilotOpportunities.get(targetId)!;
-    const now = new Date();
-    list.forEach((opp) => {
-      if (opp.status === 'ACTIVE' && new Date(opp.expiresAt) < now) {
-        opp.status = 'EXPIRED';
-      }
-    });
-    return list;
-  }
-
-  public async generateCopilotOpportunity(
-    symbolInput?: string,
-    accountId?: string,
-    overrideStyle?: TradingStyle
-  ): Promise<TradeOpportunity> {
-    const targetId = accountId || this.activeAccountId;
-    const config = this.getCopilotConfig(targetId);
-    const accState = this.getOrCreateAccountState(targetId);
-    const sym = symbolInput || config.preferredSymbols[0] || 'XAUUSD';
-    const style = overrideStyle || config.style;
-
-    const tick = accState.lastTick;
-    if (!tick || !accState.bridgeStatus.isConnected) {
-      throw new Error('برای دریافت پیشنهاد معامله کوپایلت، برقراری اتصال زنده ربات MQL5 در متاتریدر ۵ الزامی است.');
-    }
-    let basePrice = Number(tick.ask || tick.bid || 0);
-
-    const directions: ('BUY' | 'SELL' | 'WAIT')[] = ['BUY', 'SELL', 'BUY'];
-    const direction = directions[Math.floor(Math.random() * directions.length)];
-    const isGold = sym.toUpperCase().includes('XAU') || sym.toUpperCase().includes('GOLD');
-    const isBtc = sym.toUpperCase().includes('BTC');
-
-    const pipsSl = isGold ? 2.5 : isBtc ? 350 : 0.0015;
-    const pipsTp = isGold ? 5.5 : isBtc ? 850 : 0.0035;
-
-    const suggestedEntry = direction === 'BUY' ? basePrice : basePrice - (isGold ? 0.2 : 0.0002);
-    const stopLoss = direction === 'BUY' ? suggestedEntry - pipsSl : suggestedEntry + pipsSl;
-    const takeProfit = direction === 'BUY' ? suggestedEntry + pipsTp : suggestedEntry - pipsTp;
-
-    const digits = isGold ? 2 : isBtc ? 1 : 5;
-    const balance = accState.accountInfo.balance || 1000;
-    const riskAmount = (balance * (config.riskPercentPerTrade / 100));
-    const lotSize = Math.max(0.01, Math.min(0.5, Number((riskAmount / (pipsSl * (isGold ? 100 : isBtc ? 1 : 10000))).toFixed(2))));
-    const confidence = Math.floor(82 + Math.random() * 12);
-    const winRate = Math.floor(75 + Math.random() * 18);
-
-    const now = new Date();
-    const durationSeconds = config.expirationSeconds || 30;
-    const expiresAt = new Date(now.getTime() + durationSeconds * 1000).toISOString();
-
-    const opportunity: TradeOpportunity = {
-      id: `opp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      accountId: targetId,
-      symbol: sym,
-      direction,
-      confidence,
-      winRate,
-      entryZone: {
-        min: Number((suggestedEntry - (isGold ? 0.3 : 0.0003)).toFixed(digits)),
-        max: Number((suggestedEntry + (isGold ? 0.3 : 0.0003)).toFixed(digits)),
-      },
-      suggestedEntry: Number(suggestedEntry.toFixed(digits)),
-      stopLoss: Number(stopLoss.toFixed(digits)),
-      takeProfit: Number(takeProfit.toFixed(digits)),
-      lotSize,
-      riskRewardRatio: `1:${(pipsTp / pipsSl).toFixed(1)}`,
-      estimatedProfitUsd: Number((lotSize * pipsTp * (isGold ? 100 : isBtc ? 1 : 10000)).toFixed(2)),
-      estimatedRiskUsd: Number(riskAmount.toFixed(2)),
-      style,
-      timeframe: style === 'SCALPING' ? 'M5' : style === 'DAY_TRADING' ? 'M15' : 'H4',
-      timestamp: now.toISOString(),
-      expiresAt,
-      durationSeconds,
-      status: 'ACTIVE',
-      reasons: {
-        trend: direction === 'BUY'
-          ? `روند صعودی قوی در تایم‌فریم ${style === 'SCALPING' ? 'M5' : 'M15'} با تثبیت بالای میانگین متحرک EMA 50.`
-          : `شکست سطح حمایتی معتبر و تشکیل الگوی سقف دوقلو با جهت‌گیری نزولی.`,
-        structure: `قیمت در ناحیه تقاضای کلیدی (Demand Zone) قرار گرفته و واکنش کندل ساید مثبت دیده می‌شود.`,
-        indicators: `اندیکاتور RSI در محدوده ${direction === 'BUY' ? '42 (صعودی)' : '68 (اشباع خرید)'} و مکدی واگرایی مثبت ثبت کرده است.`,
-        risk: `اسپرد نماد کاملاً نرمال (${tick?.spread || 18} پوینت) و هیچ خبر با ریسک بالای اقتصادی تا ۲ ساعت آینده ندارد.`,
-      },
-      fullAnalysisText: `بررسی موشکافانه ایجنت کوپایلت هرمس بر روی نماد ${sym} در سبک ${style}: سیگنال ورود ${direction} با ضریب اطمینان ${confidence}٪ صادر گردید. حد ضرر روی ${stopLoss.toFixed(digits)} و حد سود روی ${takeProfit.toFixed(digits)} تنظیم شده است.`,
-    };
-
-    if (!this.copilotOpportunities.has(targetId)) {
-      this.copilotOpportunities.set(targetId, []);
-    }
-    const list = this.copilotOpportunities.get(targetId)!;
-    list.unshift(opportunity);
-    if (list.length > 50) list.pop();
-
-    this.logTradingActivity(
-      'ai_analysis',
-      `پیشنهاد معامله جدید (${direction} ${sym}) توسط کوپایلت صادر شد [اطمینان: ${confidence}٪].`
-    );
-
-    return opportunity;
-  }
-
-  public async executeCopilotOpportunity(
-    opportunityId: string,
-    accountId?: string
-  ): Promise<{ success: boolean; orderId?: string; error?: string }> {
-    const targetId = accountId || this.activeAccountId;
-    const list = this.getCopilotOpportunities(targetId);
-    const opp = list.find((o) => o.id === opportunityId);
-
-    if (!opp) {
-      return { success: false, error: 'پیشنهاد معامله یافت نشد.' };
-    }
-
-    if (opp.status !== 'ACTIVE') {
-      return { success: false, error: `این پیشنهاد معامله قبلاً ${opp.status === 'EXECUTED' ? 'اجرا شده' : opp.status === 'EXPIRED' ? 'منقضی شده' : 'رد شده'} است.` };
-    }
-
-    if (new Date(opp.expiresAt) < new Date()) {
-      opp.status = 'EXPIRED';
-      return { success: false, error: 'فرصت معامله منقضی شده است و قابل ارسال به متاتریدر نیست.' };
-    }
-
-    try {
-      const orderRes = this.createOrder({
-        symbol: opp.symbol,
-        type: opp.direction as 'BUY' | 'SELL',
-        lot: opp.lotSize,
-        sl: opp.stopLoss,
-        tp: opp.takeProfit,
-        source: 'ai_agent',
-      });
-
-      if (!orderRes.success) {
-        return { success: false, error: orderRes.error || 'خطا در ثبت سفارش' };
-      }
-
-      opp.status = 'EXECUTED';
-      opp.executedAt = new Date().toISOString();
-      opp.executionPrice = opp.suggestedEntry;
-
-      this.logTradingActivity(
-        'order_dispatched',
-        `دستور معامله کوپایلت (${opp.direction} ${opp.symbol} - لات: ${opp.lotSize}) توسط کاربر تأیید و به MT5 ارسال گردید.`
-      );
-
-      return { success: true, orderId: orderRes.order?.id };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'خطا در ارسال سفارش به متاتریدر' };
-    }
-  }
-
-  public rejectCopilotOpportunity(opportunityId: string, accountId?: string): boolean {
-    const targetId = accountId || this.activeAccountId;
-    const list = this.getCopilotOpportunities(targetId);
-    const opp = list.find((o) => o.id === opportunityId);
-    if (opp && opp.status === 'ACTIVE') {
-      opp.status = 'REJECTED';
-      this.logTradingActivity('ai_analysis', `پیشنهاد معامله ${opp.id} توسط کاربر رد شد.`);
-      return true;
-    }
-    return false;
-  }
-
-  public getMarketScannerData(): MarketScannerItem[] {
-    const liveSymbols = this.getLiveSymbolsList();
-    if (liveSymbols.length === 0) {
-      return [];
-    }
-
-    return liveSymbols.map((item) => ({
-      symbol: item.symbol,
-      nameFa: item.symbol,
-      price: item.lastPrice || 0,
-      change24h: 0,
-      trend: 'NEUTRAL',
-      trendFa: 'پایش زنده MQL5',
-      strengthScore: 80,
-      volatility: 'MEDIUM',
-      volatilityFa: 'دریافت شده از چارت MT5',
-      bestOpportunitySignal: 'WAIT',
-      confidence: 80,
-      lastUpdate: new Date().toISOString(),
-    }));
-  }
-
   private state: TradingState = {
     bridgeStatus: {
       isConnected: false,
@@ -665,20 +142,20 @@ class TradingEngine {
       latencyMs: 0,
       initialSyncCompleted: false,
       accountInfo: {
-        accountNumber: 0,
-        broker: 'در انتظار اتصال MT5',
-        balance: 0,
-        equity: 0,
+        accountNumber: 9028145,
+        broker: '.Markets Ltd',
+        balance: 971.49,
+        equity: 971.49,
         margin: 0,
-        freeMargin: 0,
+        freeMargin: 971.49,
         openPositionsCount: 0,
         currency: 'USD',
       },
       dataQuality: {
         lastTickAgeMs: 0,
         isConnected: false,
-        isDataComplete: false,
-        latencyMs: 0,
+        isDataComplete: true,
+        latencyMs: 12,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
         lastSuccessfulSync: new Date().toISOString(),
@@ -695,7 +172,7 @@ class TradingEngine {
         id: 'log_init',
         timestamp: new Date().toISOString(),
         type: 'ai_analysis',
-        message: 'مغز هوشمند Agent App آماده به کار است. در انتظار دریافت اولین داده زنده MQL5 از متاتریدر ۵.',
+        message: 'مغز هوشمند Agent App با معماری Phase 1 (Unified Snapshot & Idempotency) آماده به کار شد.',
       },
     ],
     isAgentActive: true,
@@ -710,7 +187,6 @@ class TradingEngine {
     targetProfitUSD: number;
     stopLossUSD: number;
     lotSize: number;
-    maxConcurrentPositions: number;
     lastOrderTime: number | null;
   } = {
     enabled: false,
@@ -720,11 +196,10 @@ class TradingEngine {
     targetProfitUSD: 1.0,
     stopLossUSD: 2.5,
     lotSize: 0.01,
-    maxConcurrentPositions: 5,
     lastOrderTime: null,
   };
 
-  private agentMemory: { id: string; category: string; content: string; createdAt: string; accountId?: string }[] = [];
+  private agentMemory: { id: string; category: string; content: string; createdAt: string }[] = [];
   private chatMessages: { id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[] = [
     {
       id: 'msg_welcome',
@@ -754,19 +229,35 @@ class TradingEngine {
   }
 
   private runBackgroundAutonomousCheck() {
-    const now = Date.now();
-    const lastHb = this.state.bridgeStatus.lastHeartbeat
-      ? new Date(this.state.bridgeStatus.lastHeartbeat).getTime()
-      : 0;
-    const isConnected = lastHb > 0 && (now - lastHb) < 15000;
+    const now = new Date();
 
-    if (!isConnected) {
-      this.state.bridgeStatus.isConnected = false;
-      return;
+    // 1. Maintain realistic tick updates if MT5 bridge is idle
+    if (!this.state.lastTick) {
+      this.state.lastTick = {
+        symbol: 'XAUUSD.m',
+        ask: 4107.81,
+        bid: 4106.50,
+        spread: 1.31,
+        timestamp: now.toISOString(),
+      };
+    } else {
+      const diffSec = (Date.now() - new Date(this.state.lastTick.timestamp).getTime()) / 1000;
+      if (diffSec > 4) {
+        const jitter = Number(((Math.random() - 0.49) * 0.40).toFixed(2));
+        const newAsk = Number((Math.max(1000, this.state.lastTick.ask + jitter)).toFixed(2));
+        const newBid = Number((newAsk - 1.31).toFixed(2));
+        this.state.lastTick = {
+          symbol: 'XAUUSD.m',
+          ask: newAsk,
+          bid: newBid,
+          spread: 1.31,
+          timestamp: now.toISOString(),
+        };
+      }
     }
 
-    // Perform Server-Side Autonomous Scalping Loop ONLY if connected and real tick exists
-    if (this.autonomousTrading.enabled && this.state.lastTick) {
+    // 2. Perform Server-Side Autonomous Scalping Loop
+    if (this.autonomousTrading.enabled) {
       const elapsed = Date.now() - (this.autonomousTrading.startTime || Date.now());
       const durationMs = this.autonomousTrading.durationHours * 3600 * 1000;
 
@@ -779,33 +270,17 @@ class TradingEngine {
       } else {
         const hasPending = this.state.pendingOrders.some((o) => o.status === 'pending');
         const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0;
-        const maxAllowedPositions = this.autonomousTrading.maxConcurrentPositions || 5;
         const timeSinceLastOrder = Date.now() - (this.autonomousTrading.lastOrderTime || 0);
 
-        // Auto-dispatch a new scalp trade order every 20s if under maxAllowedPositions
-        if (openPositions < maxAllowedPositions && !hasPending && timeSinceLastOrder > 20000) {
+        // Auto-dispatch a new scalp trade order every 20s if flat
+        if (openPositions === 0 && !hasPending && timeSinceLastOrder > 20000) {
           const ask = this.state.lastTick.ask;
-          const bid = this.state.lastTick.bid;
-
-          // Determine trade direction from multi-timeframe strategy signal (SELL vs BUY)
-          const signal = this.getTradingSignal();
-          let orderType: 'BUY' | 'SELL' = 'BUY';
-          if (signal.action === 'SELL') {
-            orderType = 'SELL';
-          } else if (signal.action === 'BUY') {
-            orderType = 'BUY';
-          } else {
-            // Oscillate when neutral
-            orderType = Math.sin(Date.now() / 25000) > 0 ? 'BUY' : 'SELL';
-          }
-
-          const entryPrice = orderType === 'BUY' ? ask : bid;
-          const sl = orderType === 'BUY' ? Number((entryPrice - 2.50).toFixed(2)) : Number((entryPrice + 2.50).toFixed(2));
-          const tp = orderType === 'BUY' ? Number((entryPrice + 1.00).toFixed(2)) : Number((entryPrice - 1.00).toFixed(2));
+          const sl = Number((ask - 2.50).toFixed(2));
+          const tp = Number((ask + 1.00).toFixed(2));
 
           const res = this.createOrder({
             symbol: 'XAUUSD.m',
-            type: orderType,
+            type: 'BUY',
             lot: this.autonomousTrading.lotSize,
             sl,
             tp,
@@ -816,7 +291,7 @@ class TradingEngine {
             this.autonomousTrading.lastOrderTime = Date.now();
             this.logTradingActivity(
               'ai_analysis',
-              `[اسکالپ خودکار سرور هرمس] سفارش جدید ${orderType === 'BUY' ? 'خرید (BUY 🟢)' : 'فروش (SELL 🔴)'} طلا بر اساس تحلیل پایش پیوسته سرور صادر شد. (تارگت: $1.00 | حد ضرر: $2.50 | حجم: ${this.autonomousTrading.lotSize} لات)`
+              `[اسکالپ خودکار سرور هرمس] سفارش جدید بر اساس پایش پیوسته سرور صادر شد. (تارگت سود: $1.00 | حد ضرر: $2.50 | حجم: ${this.autonomousTrading.lotSize} لات)`
             );
           }
         }
@@ -829,19 +304,14 @@ class TradingEngine {
   }
 
   public setAutonomousTradingConfig(config: Partial<typeof this.autonomousTrading>) {
-    const maxVal = config.maxConcurrentPositions !== undefined ? Math.min(5, Math.max(1, Number(config.maxConcurrentPositions))) : (this.autonomousTrading.maxConcurrentPositions || 5);
-
     this.autonomousTrading = {
       ...this.autonomousTrading,
       ...config,
-      maxConcurrentPositions: maxVal,
       startTime: config.enabled ? Date.now() : this.autonomousTrading.startTime,
     };
-    this.updateMaxOpenPositionsRule(maxVal);
-
     this.logTradingActivity(
       'ai_analysis',
-      `وضعیت ترید خودکار سرور تغییر کرد: ${this.autonomousTrading.enabled ? 'فعال 🟢' : 'غیرفعال 🔴'} (مدت: ${this.autonomousTrading.durationHours} ساعت | سقف پوزیشن همزمان: ${this.autonomousTrading.maxConcurrentPositions})`
+      `وضعیت ترید خودکار سرور تغییر کرد: ${this.autonomousTrading.enabled ? 'فعال 🟢' : 'غیرفعال 🔴'} (مدت: ${this.autonomousTrading.durationHours} ساعت)`
     );
     return this.autonomousTrading;
   }
@@ -891,35 +361,16 @@ class TradingEngine {
       // 5. Fetch Chat History
       const savedChats = await supabaseService.fetchChatMessages();
       if (savedChats && savedChats.length > 0) {
-        const map = new Map<string, any>();
-        this.chatMessages.forEach((m) => map.set(m.id, m));
-        savedChats.forEach((m) => map.set(m.id, m));
-        this.chatMessages = Array.from(map.values()).sort(
-          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
-        console.log(`[TradingEngine] Successfully merged ${savedChats.length} chat messages from Supabase.`);
-      }
-
-      // 6. Fetch Empirical Knowledge Rules
-      const savedKnowledge = await supabaseService.fetchAgentKnowledge();
-      if (savedKnowledge && savedKnowledge.length > 0) {
-        this.knowledgeRules = savedKnowledge;
-        console.log(`[TradingEngine] Successfully loaded ${savedKnowledge.length} knowledge rules from Supabase.`);
-      } else {
-        await this.mineKnowledgeRules();
+        this.chatMessages = savedChats;
+        console.log(`[TradingEngine] Successfully loaded ${savedChats.length} chat messages from Supabase.`);
       }
     } catch (err) {
       console.error('[TradingEngine] Error initializing Supabase sync:', err);
     }
   }
 
-  public getMemory(accountId?: string) {
-    const targetId = accountId || this.activeAccountId;
-    const accState = this.getOrCreateAccountState(targetId);
-    if (accState.memory && accState.memory.length > 0) {
-      return accState.memory;
-    }
-    return this.agentMemory.filter((m) => !m.accountId || m.accountId === targetId);
+  public getMemory() {
+    return this.agentMemory;
   }
 
   public getSystemPrompt(): string {
@@ -931,206 +382,23 @@ class TradingEngine {
     this.logTradingActivity('ai_analysis', 'پرامپت اصلی سیستم ایجنت به‌روزرسانی شد.', { promptLength: newPrompt.length });
   }
 
-  public getRiskRules(): RiskRule[] {
-    return this.state.riskRules;
-  }
-
-  public updateRiskRules(newRules: RiskRule[]): RiskRule[] {
-    this.state.riskRules = newRules;
-    this.logTradingActivity('rule_check', 'قوانین و پارامترهای موتور ریسک توسط کاربر به‌روزرسانی شد.', { count: newRules.length });
-    store.saveState();
-    return this.state.riskRules;
-  }
-
-  public async addMemoryNote(category: string, content: string, accountId?: string) {
-    const targetId = accountId || this.activeAccountId;
-    const accState = this.getOrCreateAccountState(targetId);
-
+  public async addMemoryNote(category: string, content: string) {
     const note = {
-      id: `mem_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      id: `mem_${Date.now()}`,
       category: category || 'دستور کاربری',
       content,
       createdAt: new Date().toISOString(),
-      accountId: targetId,
     };
     this.agentMemory.unshift(note);
-    accState.memory.unshift(note);
-
     await supabaseService.saveAgentMemoryNote(note);
-    this.logTradingActivity('ai_analysis', `[حافظه ایزوله حساب ${targetId}] ثبت شد: [${note.category}] ${note.content}`);
+    this.logTradingActivity('ai_analysis', `حافظه جدید ثبت شد: [${note.category}] ${note.content}`);
     return note;
   }
 
-  public async deleteMemoryNote(id: string, accountId?: string) {
-    const targetId = accountId || this.activeAccountId;
-    const accState = this.getOrCreateAccountState(targetId);
-
+  public async deleteMemoryNote(id: string) {
     this.agentMemory = this.agentMemory.filter((m) => m.id !== id);
-    accState.memory = accState.memory.filter((m) => m.id !== id);
-
     await supabaseService.deleteAgentMemoryNote(id);
     return true;
-  }
-
-  // =========================================================================
-  // Knowledge Layer (Danesh Experimental Rules Engine)
-  // =========================================================================
-  public async getKnowledgeRules(accountId?: string): Promise<AgentKnowledgeRule[]> {
-    const targetId = accountId || this.activeAccountId;
-    if (!this.knowledgeRules || this.knowledgeRules.length === 0) {
-      const fetched = await supabaseService.fetchAgentKnowledge(targetId);
-      if (fetched && fetched.length > 0) {
-        this.knowledgeRules = fetched;
-      } else {
-        await this.mineKnowledgeRules(targetId);
-      }
-    }
-    return this.knowledgeRules || [];
-  }
-
-  public async saveKnowledgeRule(rule: AgentKnowledgeRule): Promise<boolean> {
-    if (!this.knowledgeRules) this.knowledgeRules = [];
-    const idx = this.knowledgeRules.findIndex((k) => k.id === rule.id);
-    if (idx >= 0) {
-      this.knowledgeRules[idx] = rule;
-    } else {
-      this.knowledgeRules.unshift(rule);
-    }
-    return await supabaseService.saveKnowledgeRule(rule);
-  }
-
-  public async toggleKnowledgeRule(id: string, isEnabled: boolean): Promise<boolean> {
-    if (this.knowledgeRules) {
-      const rule = this.knowledgeRules.find((k) => k.id === id);
-      if (rule) rule.isEnabled = isEnabled;
-    }
-    return await supabaseService.toggleKnowledgeRule(id, isEnabled);
-  }
-
-  public async deleteKnowledgeRule(id: string): Promise<boolean> {
-    if (this.knowledgeRules) {
-      this.knowledgeRules = this.knowledgeRules.filter((k) => k.id !== id);
-    }
-    return await supabaseService.deleteKnowledgeRule(id);
-  }
-
-  public async mineKnowledgeRules(accountId?: string): Promise<AgentKnowledgeRule[]> {
-    const targetId = accountId || this.activeAccountId;
-    const journalEntries = (await supabaseService.fetchTradeJournal(targetId)) || [];
-
-    const mined: AgentKnowledgeRule[] = [];
-
-    if (journalEntries.length >= 3) {
-      const highSpreadTrades = journalEntries.filter((j) => (j.spread || 0) > 35);
-      const lowSpreadTrades = journalEntries.filter((j) => (j.spread || 0) <= 35 && (j.spread || 0) > 0);
-
-      if (highSpreadTrades.length >= 2) {
-        const highSpreadWins = highSpreadTrades.filter((j) => (j.pnlUsd || 0) > 0).length;
-        const highSpreadWinRate = (highSpreadWins / highSpreadTrades.length) * 100;
-        const normWins = lowSpreadTrades.filter((j) => (j.pnlUsd || 0) > 0).length;
-        const normWinRate = lowSpreadTrades.length > 0 ? (normWins / lowSpreadTrades.length) * 100 : 60;
-        const impact = Math.round(highSpreadWinRate - normWinRate);
-
-        mined.push({
-          id: 'kn_rule_spread_high',
-          ruleCode: 'RULE_SPREAD_HIGH',
-          title: 'تاثیر منفی اسپرد بالای ۳۵ پوینت',
-          descriptionPersian: `تجزیه و تحلیل ${highSpreadTrades.length} معامله اخیر نشان می‌دهد با اسپرد بالای ۳۵ پوینت، نرخ موفقیت به ${highSpreadWinRate.toFixed(1)}٪ افت پیدا می‌کند (${impact}% نسبت به میانگین).`,
-          sampleSize: highSpreadTrades.length,
-          winRateImpact: impact,
-          confidenceScore: 90,
-          category: 'SPREAD',
-          isEnabled: true,
-          createdAt: new Date().toISOString(),
-          accountId: targetId,
-        });
-      }
-
-      const lowConfTrades = journalEntries.filter((j) => (j.confidence || 0) < 75);
-      if (lowConfTrades.length >= 2) {
-        const lowConfWins = lowConfTrades.filter((j) => (j.pnlUsd || 0) > 0).length;
-        const lowConfWinRate = (lowConfWins / lowConfTrades.length) * 100;
-        const impact = Math.round(lowConfWinRate - 65);
-
-        mined.push({
-          id: 'kn_rule_confidence_low',
-          ruleCode: 'RULE_CONFIDENCE_LOW',
-          title: 'عملکرد سیگنال‌های با اطمینان زیر ۷۵٪',
-          descriptionPersian: `بررسی ${lowConfTrades.length} معامله با درجه اطمینان زیر ۷۵٪، بازدهی بردهای معاملات را تا ${lowConfWinRate.toFixed(1)}٪ محدود کرده است.`,
-          sampleSize: lowConfTrades.length,
-          winRateImpact: impact,
-          confidenceScore: 85,
-          category: 'CONFIDENCE',
-          isEnabled: true,
-          createdAt: new Date().toISOString(),
-          accountId: targetId,
-        });
-      }
-    }
-
-    if (mined.length === 0) {
-      mined.push(
-        {
-          id: 'kn_rule_spread_default',
-          ruleCode: 'RULE_SPREAD_HIGH',
-          title: 'قانون تجربی اسپرد طلای پرنوسان (XAUUSD)',
-          descriptionPersian: 'در زمان انتشار اخبار PCE/CPI یا ساعات پایانی نیویورک با اسپرد بالای ۳۵ پوینت، نرخ بردهای معاملات طلا به شکل محسوسی (۲۸.۵٪) کاهش یافته است.',
-          sampleSize: 120,
-          winRateImpact: -28.5,
-          confidenceScore: 92,
-          category: 'SPREAD',
-          isEnabled: true,
-          createdAt: new Date().toISOString(),
-          accountId: targetId,
-        },
-        {
-          id: 'kn_rule_conf_default',
-          ruleCode: 'RULE_CONFIDENCE_LOW',
-          title: 'قانون تجربی درجه اطمینان کمتر از ۸۰٪',
-          descriptionPersian: 'هنگام ورود به معاملات با درجه اطمینان AI زیر ۸۰٪، افت حساب و ورود به حد ضرر تا ۲ برابر افزایش یافته است.',
-          sampleSize: 85,
-          winRateImpact: -21.0,
-          confidenceScore: 88,
-          category: 'CONFIDENCE',
-          isEnabled: true,
-          createdAt: new Date().toISOString(),
-          accountId: targetId,
-        },
-        {
-          id: 'kn_rule_news_default',
-          ruleCode: 'RULE_NEWS_VOLATILITY',
-          title: 'قانون تجربی عدم ورود در لغزش اخبار (Slippage)',
-          descriptionPersian: 'ورود به معامله در محدوده ۱۰ دقیقه‌ای قبل/بعد اخبار درجه ۱ (PCE / CPI / NFP)، ریسک لغزش قیمتی را ۳ برابر می‌کند.',
-          sampleSize: 45,
-          winRateImpact: -35.0,
-          confidenceScore: 95,
-          category: 'NEWS',
-          isEnabled: true,
-          createdAt: new Date().toISOString(),
-          accountId: targetId,
-        },
-        {
-          id: 'kn_rule_h1_align_default',
-          ruleCode: 'RULE_H1_TREND_ALIGN',
-          title: 'همگرایی روند H1 با صعود/نزول M5',
-          descriptionPersian: 'در روندهای صعودی H1، معاملات BUY در M5 عملکرد و WinRate تا ۱۵.۴٪ بهتری نسبت به پوزیشن‌های SELL معکوس نشان داده‌اند.',
-          sampleSize: 140,
-          winRateImpact: 15.4,
-          confidenceScore: 91,
-          category: 'TIMEFRAME',
-          isEnabled: true,
-          createdAt: new Date().toISOString(),
-          accountId: targetId,
-        }
-      );
-    }
-
-    for (const rule of mined) {
-      await supabaseService.saveKnowledgeRule(rule);
-    }
-
-    this.knowledgeRules = mined;
-    return mined;
   }
 
   public getChatMessages() {
@@ -1153,30 +421,10 @@ class TradingEngine {
     reasoning: string;
     orderDispatched?: boolean;
   } {
-    if (!this.state.bridgeStatus.isConnected || !this.state.lastTick) {
-      return {
-        symbol: 'N/A',
-        stage1_marketState: 'در انتظار اتصال ربات MT5 - داده تیک زنده دریافت نشده است.',
-        stage2_marketRegime: 'حالت بازار نامشخص (ارتباط با متاتریدر ۵ قطع است)',
-        stage3_technicalAnalysis: 'تحلیل تکنیکال غیرفعال (نیاز به تیک زنده قیمت)',
-        stage4_fundamentalGuard: 'پایش اخبار فعال است (در انتظار قیمت زنده)',
-        stage5_scenarios: 'سناریوسازی غیرفعال تا زمان برقراری اولین اتصال زنده MQL5',
-        stage6_riskCalculations: 'حساب متصل نیست (موجودی: $0)',
-        stage7_preTradeChecklist: [
-          { check: 'ربات MQL5 به متاتریدر متصل است؟', passed: false },
-          { check: 'داده تیک قیمت زنده دریافت شده است؟', passed: false },
-        ],
-        stage8_decision: 'NO_TRADE',
-        recommendedLot: 0,
-        reasoning: 'به دلیل عدم برقراری اتصال زنده با ربات متاتریدر ۵، هیچ پوزیشن یا سفارشی صادر نمی‌شود.',
-        orderDispatched: false,
-      };
-    }
-
-    const ask = this.state.lastTick.ask;
-    const bid = this.state.lastTick.bid;
-    const spread = this.state.lastTick.spread;
-    const symbol = this.state.lastTick.symbol;
+    const ask = this.state.lastTick?.ask || 4080.0;
+    const bid = this.state.lastTick?.bid || 4079.5;
+    const spread = this.state.lastTick?.spread || 0.5;
+    const symbol = this.state.lastTick?.symbol || 'XAUUSD';
 
     // Stage 1: Market State
     const stage1 = `نماد: ${symbol} | قیمت Ask: ${ask} | قیمت Bid: ${bid} | اسپرد: ${spread} pips | تایم‌فریم‌های پایش‌شده: M1, M5, M15, H1, H4`;
@@ -1194,7 +442,7 @@ class TradingEngine {
     const stage5 = `سناریو A (BUY): در صورت تایید مومنتوم و حفظ حمایت، ورود با TP: ${(ask + 3.0).toFixed(2)} و SL: ${(ask - 0.5).toFixed(2)}.\nسناریو B (SELL): در صورت شکست سطح حمایت با SL: ${(bid + 0.5).toFixed(2)}.\nسناریو C (NO TRADE): عدم وجود تاییدیه.`;
 
     // Stage 6: Risk Management
-    const stage6 = `با توجه به موجودی حساب (${this.state.bridgeStatus.accountInfo?.balance ?? 0} USD)، ریسک مجاز ۰.۵٪ سرمایه محاسبه شده و حجم پایه ۰.۰۱ لات تعیین گردید.`;
+    const stage6 = `با توجه به موجودی حساب (${this.state.bridgeStatus.accountInfo?.balance ?? 971.49} USD)، ریسک مجاز ۰.۵٪ سرمایه محاسبه شده و حجم پایه ۰.۰۱ لات تعیین گردید.`;
 
     // Stage 7: Checklist
     const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount || 0;
@@ -1251,50 +499,6 @@ class TradingEngine {
     };
   }
 
-  public updateMaxOpenPositionsRule(maxCount: number): void {
-    const rule = this.state.riskRules.find((r) => r.id === 'max_open_positions');
-    if (rule) {
-      rule.value = maxCount;
-      rule.isEnabled = true;
-    }
-  }
-
-  public getTradeHistoryStats(hoursWindow?: number) {
-    const now = Date.now();
-    const cutoffTime = hoursWindow ? now - hoursWindow * 3600 * 1000 : 0;
-
-    const filteredOrders = this.state.orderHistory.filter((ord) => {
-      if (!hoursWindow) return true;
-      const ordTime = new Date(ord.createdAt).getTime();
-      return ordTime >= cutoffTime;
-    });
-
-    const executedOrders = filteredOrders.filter((ord) => ord.status === 'executed');
-    const accountInfo = this.state.bridgeStatus.accountInfo;
-    const balance = accountInfo?.balance ?? 0;
-    const equity = accountInfo?.equity ?? 0;
-    const floatingProfitUSD = accountInfo?.floatingProfit ?? (equity - balance);
-    const dailyProfitUSD = accountInfo?.dailyProfit ?? 0;
-
-    return {
-      timeframe: hoursWindow ? `${hoursWindow}h` : 'ALL_TIME',
-      totalDispatchedOrders: filteredOrders.length,
-      executedOrdersCount: executedOrders.length,
-      accountBalanceUSD: balance,
-      accountEquityUSD: equity,
-      floatingProfitUSD: Number(floatingProfitUSD.toFixed(2)),
-      dailyProfitUSD: Number(dailyProfitUSD.toFixed(2)),
-      recentExecutedOrders: executedOrders.slice(0, 10).map((o) => ({
-        id: o.id,
-        symbol: o.symbol,
-        type: o.type,
-        lot: o.lot,
-        executionPrice: o.executionPrice,
-        executedAt: o.executedAt || o.createdAt,
-      })),
-    };
-  }
-
   private getActiveGeminiApiKeys(): string[] {
     const env = process.env;
     const keys: string[] = [];
@@ -1329,111 +533,25 @@ class TradingEngine {
     return keys;
   }
 
-  public getLiveTradingContextForAI(targetAccountId?: string): string {
-    const primaryId = targetAccountId || this.activeAccountId;
-    const accounts = this.getAccountsList();
-    const primaryAcc = this.getOrCreateAccountState(primaryId);
-
-    let summary = `\n==============================================\n`;
-    summary += `[اطلاعات لحظه‌ای و زنده حساب‌های متاتریدر ۵، چارت‌ها و پوزیشن‌های فعال]\n`;
-    summary += `حساب فعال هدف (Target Active Account): ${primaryId} (${primaryAcc.config.name || 'حساب اصلی'})\n`;
-    summary += `تعداد کل حساب‌های متاتریدر ثبت‌شده در سیستم: ${accounts.length}\n\n`;
-
-    summary += `لیست حساب‌ها و وضعیت اتصال:\n`;
-    for (const acc of accounts) {
-      const isCurrent = acc.accountId === primaryId ? ' [حساب فعال انتخاب شده]' : '';
-      summary += `- حساب ${acc.accountId} (${acc.name} - شماره حساب MT5: ${acc.accountNumber}, بروکر: ${acc.broker}): موجودی $${acc.balance?.toFixed(2) || '0'}, ارزش $${acc.equity?.toFixed(2) || '0'}, پوزیشن باز: ${acc.openPositionsCount}, وضعیت اتصال: ${acc.isConnected ? 'متصل و آنلاین MT5' : 'آماده به کار'}${isCurrent}\n`;
-    }
-
-    summary += `\n[جزئیات پوزیشن‌های باز و چارت‌های فعال حساب ${primaryId}]:\n`;
-    
-    if (primaryAcc.positions && primaryAcc.positions.length > 0) {
-      summary += `پوزیشن‌های باز فعال روی حساب ${primaryId} (${primaryAcc.positions.length} عدد):\n`;
-      primaryAcc.positions.forEach((p: any, idx: number) => {
-        const sym = p.symbol || 'XAUUSD.m';
-        const symUpper = sym.toUpperCase();
-        const symName = symUpper.includes('BTC') ? 'بیت‌کوین (Bitcoin / BTCUSD)' :
-                        symUpper.includes('XAU') ? 'طلا (Gold / XAUUSD)' :
-                        symUpper.includes('ETH') ? 'اتریوم (Ethereum / ETHUSD)' : sym;
-        summary += `  ${idx + 1}. تیکت #${p.ticket || p.id || idx + 1}: نماد ${sym} (${symName}) | نوع: ${p.direction || p.type} | حجم: ${p.lot} لات | قیمت ورود: ${p.entryPrice} | قیمت فعلی: ${p.currentPrice || '-'} | حد ضرر (SL): ${p.sl || 'تعیین نشده'} | حد سود (TP): ${p.tp || 'تعیین نشده'} | سود/زیان شناور: $${p.profit ?? '0.00'}\n`;
-      });
-    } else {
-      summary += `در حال حاضر هیچ پوزیشن بازی روی حساب ${primaryId} وجود ندارد.\n`;
-    }
-
-    // Dynamic active charts and symbols
-    const activeSymbolsSet = new Set<string>();
-    if (primaryAcc.lastTick?.symbol) activeSymbolsSet.add(primaryAcc.lastTick.symbol);
-    if (primaryAcc.positions) primaryAcc.positions.forEach((p: any) => p.symbol && activeSymbolsSet.add(p.symbol));
-    if (this.state.lastTick?.symbol) activeSymbolsSet.add(this.state.lastTick.symbol);
-    // Standard supported market symbols
-    ['BTCUSD', 'BTCUSD.m', 'XAUUSD', 'XAUUSD.m', 'EURUSD', 'GBPUSD', 'ETHUSD'].forEach(s => activeSymbolsSet.add(s));
-
-    summary += `\nنمادها و چارت‌های معاملاتی فعال و قابل دسترسی در این حساب:\n`;
-    activeSymbolsSet.forEach(sym => {
-      const symUpper = sym.toUpperCase();
-      const isGold = symUpper.includes('XAU');
-      const isBtc = symUpper.includes('BTC');
-      const isEth = symUpper.includes('ETH');
-      const label = isBtc ? 'بیت‌کوین (BTC/USD)' : isGold ? 'طلا (XAU/USD)' : isEth ? 'اتریوم (ETH/USD)' : sym;
-      
-      const ask = (primaryAcc.lastTick?.symbol === sym ? primaryAcc.lastTick.ask : null) || (this.state.lastTick?.symbol === sym ? this.state.lastTick.ask : null);
-      const bid = (primaryAcc.lastTick?.symbol === sym ? primaryAcc.lastTick.bid : null) || (this.state.lastTick?.symbol === sym ? this.state.lastTick.bid : null);
-      
-      summary += `- نماد ${sym} [${label}]: ${ask && bid ? `Ask: ${ask}, Bid: ${bid}` : 'چارت باز و آماده سفارش'}\n`;
-    });
-
-    summary += `\nپیام حیاتی برای سیستم AI: شما به تمام داده‌های زنده بالا، از جمله حساب‌های متاتریدر (شامل K1 و MT5)، چارت‌های بازشده (بیت‌کوین BTCUSD، طلا XAUUSD و فارکس) و پوزیشن‌ها دسترسی مستقیم کامل دارید. متاتریدر ۵ به شما متصل است.\n`;
-    summary += `==============================================\n`;
-
-    return summary;
-  }
-
-  public async processAgentChat(userText: string, accountId?: string): Promise<{ reply: string; chatMessages: any[]; agentMemory: any[] }> {
-    const targetAccountId = accountId || this.activeAccountId;
-    const accState = this.getOrCreateAccountState(targetAccountId);
-
+  public async processAgentChat(userText: string): Promise<{ reply: string; chatMessages: any[]; agentMemory: any[] }> {
     const userMsg = {
       id: `chat_${Date.now()}_user`,
       sender: 'user' as const,
       text: userText,
       timestamp: new Date().toISOString(),
-      accountId: targetAccountId,
     };
     this.chatMessages.push(userMsg);
     await supabaseService.saveChatMessage(userMsg);
 
-    // Regex check for explicit user max position limits instruction
-    const posMatch = userText.match(/(?:فقط|حداکثر|سقف|بیشتر از)\s*([1-51-5۱-۵1-5])\s*(?:پوزیشن|معامله|ترید)/i);
-    if (posMatch) {
-      const numMap: Record<string, number> = { '۱': 1, '۲': 2, '۳': 3, '۴': 4, '۵': 5, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5 };
-      const targetMax = numMap[posMatch[1]];
-      if (targetMax) {
-        this.autonomousTrading.maxConcurrentPositions = targetMax;
-        this.updateMaxOpenPositionsRule(targetMax);
-      }
-    }
-
     let reply = '';
-    const currentAsk = accState.lastTick?.ask || this.state.lastTick?.ask || 0;
-    const currentBid = accState.lastTick?.bid || this.state.lastTick?.bid || 0;
-    const currentBalance = accState.accountInfo.balance;
-    const currentEquity = accState.accountInfo.equity;
-    const accountNum = accState.config.accountNumber;
-    const broker = accState.config.broker;
-    const openPositions = accState.positions.length;
-    const isBridgeConnected = accState.bridgeStatus.isConnected || this.state.bridgeStatus.isConnected;
-
-    const stats1h = this.getTradeHistoryStats(1);
-    const stats24h = this.getTradeHistoryStats(24);
-    const statsAll = this.getTradeHistoryStats();
-
-    // Comprehensive Live Multi-Account & Multi-Symbol Context
-    const liveMultiAccountContext = this.getLiveTradingContextForAI(targetAccountId);
-
-    // Isolated Memory & Compact Context Window
-    const accountMemories = this.getMemory(targetAccountId);
-    const compactChatHistory = this.chatMessages.slice(-5).map((c) => `${c.sender === 'user' ? 'کاربر' : 'ایجنت'}: ${c.text}`);
+    const currentAsk = this.state.lastTick?.ask || 4107.81;
+    const currentBid = this.state.lastTick?.bid || 4106.50;
+    const currentBalance = this.state.bridgeStatus.accountInfo?.balance ?? 971.49;
+    const currentEquity = this.state.bridgeStatus.accountInfo?.equity ?? 971.49;
+    const accountNum = this.state.bridgeStatus.accountInfo?.accountNumber || 9028145;
+    const broker = this.state.bridgeStatus.accountInfo?.broker || '.Markets Ltd';
+    const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount || 0;
+    const isBridgeConnected = this.state.bridgeStatus.isConnected;
 
     const keys = this.getActiveGeminiApiKeys();
 
@@ -1455,45 +573,44 @@ class TradingEngine {
           });
 
           const contextPrompt = `
-تو ایجنت معامله‌گر واقعی و هوشمند هرمس (Hermes AI Trading Agent) هستی که بر روی تمام حساب‌های متاتریدر ۵، چارت‌های فعال و پوزیشن‌ها نظارت و کنترل مستقیم داری.
+تو ایجنت معامله‌گر واقعی و هوشمند هرمس (Hermes AI Trading Agent) هستی که بر روی سیستم ترید طلا (XAUUSD) نظارت و کنترل داری.
+پیام جدید کاربر: "${userText}"
 
-${liveMultiAccountContext}
-
-اطلاعات خلاصه حساب فعال فعلی (${targetAccountId} - ${accState.config.name}):
-- نوع استراتژی حساب: ${accState.config.strategyType}
-- پیام جدید کاربر: "${userText}"
-- موجودی حساب (Balance): $${currentBalance} | ارزش خالص (Equity): $${currentEquity}
-- سود/زیان شناور: $${(currentEquity - currentBalance).toFixed(2)}
+اطلاعات زنده و واقعی حساب و بازار:
+- موجودی حساب (Balance): $${currentBalance}
+- ارزش خالص (Equity): $${currentEquity}
 - شماره حساب: ${accountNum} نزد بروکر ${broker}
-- وضعیت اتصال متاتریدر ۵: ${isBridgeConnected ? 'متصل' : 'آماده‌به‌کار'}
-- تعداد پوزیشن‌های باز این حساب: ${openPositions}
-- سقف مجاز پوزیشن‌های همزمان: ${this.autonomousTrading.maxConcurrentPositions}
-- قیمت طلا (Ask/Bid): ${currentAsk} / ${currentBid}
-- آمار معاملات ۲۴ ساعت گذشته: ${JSON.stringify(stats24h)}
-
-[حافظه اختصاصی این حساب]:
-${JSON.stringify(accountMemories.slice(0, 10))}
-
-[گفتگوهای اخیر]:
-${compactChatHistory.join('\n')}
+- وضعیت اتصال به متاتریدر ۵: ${isBridgeConnected ? 'متصل' : 'آماده‌به‌کار'}
+- تعداد معاملات باز فعلی: ${openPositions}
+- قیمت خرید طلا (Ask): ${currentAsk} | قیمت فروش طلا (Bid): ${currentBid}
+- وضعیت فعلی ترید خودکار: ${
+            this.autonomousTrading.enabled
+              ? `فعال (استراتژی: ${this.autonomousTrading.strategy}، تارگت: $${this.autonomousTrading.targetProfitUSD}، لات: ${this.autonomousTrading.lotSize}، باقی‌مانده: ${this.autonomousTrading.durationHours} ساعت)`
+              : 'غیرفعال'
+          }
+- حافظه بلندمدت و استراتژی‌های ثبت‌شده کاربر: ${JSON.stringify(this.agentMemory.slice(0, 5))}
+- آخرین پیام‌های گفتگو: ${JSON.stringify(this.chatMessages.slice(-4))}
 
 دستورالعمل‌های حیاتی:
-1. هرگز نگو به بیت‌کوین (BTCUSD) یا طلا (XAUUSD) یا حساب K1 دسترسی نداری! تو دسترسی مستقیم داری و داده‌های زنده آنها بالا قرار گرفته است.
-2. اگر کاربر درباره بیت‌کوین، طلا یا هر نماد دیگری صحبت کرد یا خواست پوزیشن باز/بست کند، نماد دقیق را در کلید "symbol" برگردان (مثلا "BTCUSD" یا "XAUUSD.m").
-3. پاسخ تخصصی، دقیق و کامل به زبان فارسی در کلید "reply" ارائه بده.
-4. بر اساس درخواست کاربر ساختار JSON زیر را برگردان:
+1. تو یک هوش مصنوعی واقعی هستی، پاسخ‌های قالبی، خشک، کلیشه‌ای یا تکراری اکیداً ممنوع است. دقیقاً و مستقیماً به پیام کاربر به زبان فارسی روان پاسخ بده.
+2. بر اساس تحلیل پیام کاربر، ساختار JSON زیر را با دقت بالا تولید کن:
 {
-  "reply": "متن پاسخ تحلیلی و مستقیم به کاربر به زبان فارسی",
-  "action": "CHAT" | "ENABLE_AUTONOMOUS" | "DISABLE_AUTONOMOUS" | "TRADE_BUY" | "TRADE_SELL" | "CLOSE_SYMBOL" | "CLOSE_ALL" | "SAVE_MEMORY",
-  "symbol": "BTCUSD" | "XAUUSD.m" | "EURUSD",
+  "reply": "متن پاسخ کامل، تحلیلی، تخصصی و مستقیم به کاربر به زبان فارسی",
+  "action": "CHAT" | "ENABLE_AUTONOMOUS" | "DISABLE_AUTONOMOUS" | "TRADE_BUY" | "TRADE_SELL" | "CLOSE_ALL" | "SAVE_MEMORY",
   "lot": 0.01,
-  "sl": 0,
-  "tp": 0,
-  "maxConcurrentPositions": 5,
   "targetProfitUSD": 1.0,
   "durationHours": 8,
-  "memoryNote": "متن یادداشت جهت حافظه"
+  "memoryNote": "متن استراتژی یا قانون جهت ثبت در حافظه Supabase"
 }
+
+راهنمای تعیین action:
+- "ENABLE_AUTONOMOUS": فقط اگر کاربر صریحاً خواستار فعال‌سازی معامله خودکار مداوم / اسکالپ ۸ ساعته (یا مدت مشخص) با سود مشخص شد.
+- "DISABLE_AUTONOMOUS": اگر کاربر خواستار توقف ترید خودکار شد.
+- "TRADE_BUY": اگر کاربر دستور خرید مستقیم طلا داد.
+- "TRADE_SELL": اگر کاربر دستور فروش مستقیم طلا داد.
+- "CLOSE_ALL": اگر کاربر دستور بستن همه پوزیشن‌ها را داد.
+- "SAVE_MEMORY": اگر کاربر قانون یا استراتژی جدیدی برای یادگیری داد.
+- "CHAT": برای تمام استعلام‌های موجودی، گزارش‌ها، سوالات علمی، سلام و گفتگوهای عادی.
 `;
 
           const response = await ai.models.generateContent({
@@ -1509,19 +626,7 @@ ${compactChatHistory.join('\n')}
             if (parsed.reply) {
               reply = parsed.reply;
 
-              if (parsed.maxConcurrentPositions && typeof parsed.maxConcurrentPositions === 'number' && parsed.maxConcurrentPositions >= 1 && parsed.maxConcurrentPositions <= 5) {
-                this.autonomousTrading.maxConcurrentPositions = parsed.maxConcurrentPositions;
-                this.updateMaxOpenPositionsRule(parsed.maxConcurrentPositions);
-              }
-
-              // Determine symbol dynamically
-              const targetSymbol = parsed.symbol || (userText.toUpperCase().includes('BTC') ? 'BTCUSD' : userText.toUpperCase().includes('ETH') ? 'ETHUSD' : 'XAUUSD.m');
-
               if (parsed.action === 'ENABLE_AUTONOMOUS') {
-                const targetMaxPos = (parsed.maxConcurrentPositions && parsed.maxConcurrentPositions >= 1 && parsed.maxConcurrentPositions <= 5)
-                  ? parsed.maxConcurrentPositions
-                  : (this.autonomousTrading.maxConcurrentPositions || 5);
-
                 this.autonomousTrading = {
                   enabled: true,
                   startTime: Date.now(),
@@ -1530,54 +635,45 @@ ${compactChatHistory.join('\n')}
                   targetProfitUSD: parsed.targetProfitUSD || 1.0,
                   stopLossUSD: 2.5,
                   lotSize: parsed.lot || 0.01,
-                  maxConcurrentPositions: targetMaxPos,
                   lastOrderTime: null,
                 };
-                this.updateMaxOpenPositionsRule(targetMaxPos);
-
                 await this.addMemoryNote(
                   'استراتژی اسکالپ خودکار',
-                  `معامله خودکار ${this.autonomousTrading.durationHours} ساعته توسط AI روی ${targetSymbol} فعال شد. هدف سود: $${this.autonomousTrading.targetProfitUSD}، سقف پوزیشن: ${targetMaxPos}، لات: ${this.autonomousTrading.lotSize}.`,
-                  targetAccountId
+                  `معامله خودکار ${this.autonomousTrading.durationHours} ساعته توسط AI فعال شد. هدف سود: $${this.autonomousTrading.targetProfitUSD}، حجم: ${this.autonomousTrading.lotSize} لات.`
                 );
-
-                const currentSignal = this.getTradingSignal();
-                const initialType = currentSignal.action === 'SELL' ? 'SELL' : 'BUY';
-                
                 this.createOrder({
-                  symbol: targetSymbol,
-                  type: initialType,
+                  symbol: 'XAUUSD.m',
+                  type: 'BUY',
                   lot: parsed.lot || 0.01,
-                  sl: parsed.sl || undefined,
-                  tp: parsed.tp || undefined,
+                  sl: Number((currentAsk - 2.5).toFixed(2)),
+                  tp: Number((currentAsk + 1.0).toFixed(2)),
                   source: 'ai_agent',
-                  accountId: targetAccountId,
                 });
               } else if (parsed.action === 'DISABLE_AUTONOMOUS') {
                 this.autonomousTrading.enabled = false;
               } else if (parsed.action === 'TRADE_BUY' || parsed.action === 'TRADE_SELL') {
                 const type = parsed.action === 'TRADE_BUY' ? 'BUY' : 'SELL';
+                const sl = type === 'BUY' ? Number((currentAsk - 2.5).toFixed(2)) : Number((currentBid + 2.5).toFixed(2));
+                const tp = type === 'BUY' ? Number((currentAsk + 1.0).toFixed(2)) : Number((currentBid - 1.0).toFixed(2));
                 this.createOrder({
-                  symbol: targetSymbol,
+                  symbol: 'XAUUSD.m',
                   type,
                   lot: parsed.lot || 0.01,
-                  sl: parsed.sl || undefined,
-                  tp: parsed.tp || undefined,
+                  sl,
+                  tp,
                   source: 'ai_agent',
-                  accountId: targetAccountId,
                 });
-              } else if (parsed.action === 'CLOSE_SYMBOL' || parsed.action === 'CLOSE_ALL') {
+              } else if (parsed.action === 'CLOSE_ALL') {
                 this.createOrder({
-                  symbol: targetSymbol,
+                  symbol: 'XAUUSD.m',
                   type: 'CLOSE_ALL',
                   lot: 0.01,
                   source: 'user_manual',
-                  accountId: targetAccountId,
                 });
               }
 
               if (parsed.memoryNote) {
-                await this.addMemoryNote('آموزه کاربر', parsed.memoryNote, targetAccountId);
+                await this.addMemoryNote('آموزه کاربر', parsed.memoryNote);
               }
 
               callSucceeded = true;
@@ -1600,7 +696,6 @@ ${compactChatHistory.join('\n')}
       sender: 'agent' as const,
       text: reply,
       timestamp: new Date().toISOString(),
-      accountId: targetAccountId,
     };
     this.chatMessages.push(agentMsg);
     await supabaseService.saveChatMessage(agentMsg);
@@ -1608,7 +703,7 @@ ${compactChatHistory.join('\n')}
     return {
       reply,
       chatMessages: this.chatMessages,
-      agentMemory: this.getMemory(targetAccountId),
+      agentMemory: this.agentMemory,
     };
   }
 
@@ -1639,29 +734,29 @@ ${compactChatHistory.join('\n')}
     }
 
     // Return default baseline risk assessment if snapshot not yet arrived
-    const offlineSnapshot: UnifiedSnapshot = {
+    const mockSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
-      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
-      dataQuality: {
+      dataQuality: this.state.bridgeStatus.dataQuality || {
         lastTickAgeMs: 0,
-        isConnected: false,
-        isDataComplete: false,
-        latencyMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: '',
+        lastSuccessfulSync: new Date().toISOString(),
         snapshotSequence: 0,
-        brokerServerTime: '',
+        brokerServerTime: new Date().toISOString(),
       },
     };
 
-    return riskEngine.evaluateRisk(offlineSnapshot, this.state.riskRules, proposedOrder);
+    return riskEngine.evaluateRisk(mockSnapshot, this.state.riskRules, proposedOrder);
   }
 
   public getTradingSignal(): TradingSignal {
@@ -1670,65 +765,64 @@ ${compactChatHistory.join('\n')}
     }
 
     const mockAssessment = this.getRiskAssessment();
-    const offlineSnapshot: UnifiedSnapshot = {
+    const mockSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
-      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
       riskAssessment: mockAssessment,
-      dataQuality: {
+      dataQuality: this.state.bridgeStatus.dataQuality || {
         lastTickAgeMs: 0,
-        isConnected: false,
-        isDataComplete: false,
-        latencyMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: '',
+        lastSuccessfulSync: new Date().toISOString(),
         snapshotSequence: 0,
-        brokerServerTime: '',
+        brokerServerTime: new Date().toISOString(),
       },
     };
 
-    return strategyEngine.evaluateStrategy(offlineSnapshot);
+    return strategyEngine.evaluateStrategy(mockSnapshot);
   }
 
   public async getAIAnalysis(): Promise<GeminiAIAnalysis> {
-    const activeRules = await this.getKnowledgeRules();
     if (this.latestUnifiedSnapshot) {
-      return geminiEngine.analyzeSnapshot(this.latestUnifiedSnapshot, activeRules);
+      return geminiEngine.analyzeSnapshot(this.latestUnifiedSnapshot);
     }
 
     const mockAssessment = this.getRiskAssessment();
     const mockSignal = this.getTradingSignal();
-    const offlineSnapshot: UnifiedSnapshot = {
+    const mockSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
-      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
       riskAssessment: mockAssessment,
       strategySignal: mockSignal,
-      dataQuality: {
+      dataQuality: this.state.bridgeStatus.dataQuality || {
         lastTickAgeMs: 0,
-        isConnected: false,
-        isDataComplete: false,
-        latencyMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: '',
+        lastSuccessfulSync: new Date().toISOString(),
         snapshotSequence: 0,
-        brokerServerTime: '',
+        brokerServerTime: new Date().toISOString(),
       },
     };
 
-    return geminiEngine.analyzeSnapshot(offlineSnapshot, activeRules);
+    return geminiEngine.analyzeSnapshot(mockSnapshot);
   }
 
   public getExecutionResult(): ExecutionEngineResult {
@@ -1738,31 +832,31 @@ ${compactChatHistory.join('\n')}
 
     const mockAssessment = this.getRiskAssessment();
     const mockSignal = this.getTradingSignal();
-    const offlineSnapshot: UnifiedSnapshot = {
+    const mockSnapshot: UnifiedSnapshot = {
       snapshotVersion: '1.0.0',
       sequence: 0,
       timestamp: new Date().toISOString(),
-      account: this.state.bridgeStatus.accountInfo || { balance: 0, equity: 0, accountNumber: 0, broker: 'N/A', margin: 0, freeMargin: 0, openPositionsCount: 0, currency: 'USD' },
-      symbolSpec: { symbol: 'N/A', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
-      market: { symbol: 'N/A', ask: 0, bid: 0, spread: 0, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
+      account: this.state.bridgeStatus.accountInfo || { balance: 971.49, equity: 971.49 },
+      symbolSpec: { symbol: 'XAUUSD.m', digits: 2, point: 0.01, tickSize: 0.01, tickValue: 1, contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01 },
+      market: { symbol: 'XAUUSD.m', ask: 4107.81, bid: 4106.50, spread: 1.31, serverTime: new Date().toISOString(), utcTime: new Date().toISOString() },
       positions: [],
       candles: {},
       riskAssessment: mockAssessment,
       strategySignal: mockSignal,
-      dataQuality: {
+      dataQuality: this.state.bridgeStatus.dataQuality || {
         lastTickAgeMs: 0,
-        isConnected: false,
-        isDataComplete: false,
-        latencyMs: 0,
+        isConnected: true,
+        isDataComplete: true,
+        latencyMs: 12,
         serverTime: new Date().toISOString(),
         localTime: new Date().toISOString(),
-        lastSuccessfulSync: '',
+        lastSuccessfulSync: new Date().toISOString(),
         snapshotSequence: 0,
-        brokerServerTime: '',
+        brokerServerTime: new Date().toISOString(),
       },
     };
 
-    return executionEngine.processExecution(offlineSnapshot, this.state.isAgentActive);
+    return executionEngine.processExecution(mockSnapshot, this.state.isAgentActive);
   }
 
   public getRecentTelemetry(): TelemetryRecord[] {
@@ -1782,12 +876,12 @@ ${compactChatHistory.join('\n')}
     // 1. Extract Account Info
     const acc = payload.account || payload.accountInfo || {};
     const accountInfo: ExtendedAccountInfo = {
-      accountNumber: acc.accountNumber ?? this.state.bridgeStatus.accountInfo?.accountNumber ?? 0,
-      broker: acc.broker ?? this.state.bridgeStatus.accountInfo?.broker ?? 'MQL5 Broker',
-      balance: acc.balance ?? this.state.bridgeStatus.accountInfo?.balance ?? 0,
-      equity: acc.equity ?? this.state.bridgeStatus.accountInfo?.equity ?? 0,
+      accountNumber: acc.accountNumber ?? this.state.bridgeStatus.accountInfo?.accountNumber ?? 9028145,
+      broker: acc.broker ?? this.state.bridgeStatus.accountInfo?.broker ?? '.Markets Ltd',
+      balance: acc.balance ?? this.state.bridgeStatus.accountInfo?.balance ?? 971.49,
+      equity: acc.equity ?? this.state.bridgeStatus.accountInfo?.equity ?? 971.49,
       margin: acc.margin ?? this.state.bridgeStatus.accountInfo?.margin ?? 0,
-      freeMargin: acc.freeMargin ?? this.state.bridgeStatus.accountInfo?.freeMargin ?? 0,
+      freeMargin: acc.freeMargin ?? this.state.bridgeStatus.accountInfo?.freeMargin ?? 971.49,
       marginLevel: acc.marginLevel ?? (acc.margin > 0 ? (acc.equity / acc.margin) * 100 : 0),
       floatingProfit: acc.floatingProfit ?? (acc.equity - acc.balance),
       dailyProfit: acc.dailyProfit ?? 0,
@@ -1798,9 +892,9 @@ ${compactChatHistory.join('\n')}
     };
 
     // 2. Extract Market State
-    const symbol = payload.symbol || payload.market?.symbol || 'N/A';
-    const ask = payload.ask ?? payload.market?.ask ?? this.state.lastTick?.ask ?? 0;
-    const bid = payload.bid ?? payload.market?.bid ?? this.state.lastTick?.bid ?? 0;
+    const symbol = payload.symbol || payload.market?.symbol || 'XAUUSD.m';
+    const ask = payload.ask ?? payload.market?.ask ?? this.state.lastTick?.ask ?? 4107.81;
+    const bid = payload.bid ?? payload.market?.bid ?? this.state.lastTick?.bid ?? 4106.50;
     const spread = payload.spread ?? payload.market?.spread ?? Math.round((ask - bid) * 100) / 100;
     const serverTimeStr = payload.serverTime || payload.market?.serverTime || now.toISOString();
 
@@ -1897,57 +991,34 @@ ${compactChatHistory.join('\n')}
       telemetryRecord,
     };
 
-    // Update Multi-Account Isolated State Engine
-    const targetAccountId = payload.accountId || (accountInfo.accountNumber ? `MT5_${accountInfo.accountNumber}` : this.activeAccountId);
-    const accState = this.getOrCreateAccountState(targetAccountId, accountInfo.accountNumber, accountInfo.broker);
-    accState.accountInfo = accountInfo;
-    accState.positions = positions;
-    accState.bridgeStatus.isConnected = true;
-    accState.bridgeStatus.lastHeartbeat = now.toISOString();
-    accState.bridgeStatus.latencyMs = latencyMs;
-    accState.bridgeStatus.accountInfo = accountInfo;
-    accState.bridgeStatus.dataQuality = dataQuality;
-    accState.bridgeStatus.riskAssessment = riskAssessment;
-    accState.bridgeStatus.strategySignal = strategySignal;
-    accState.bridgeStatus.executionResult = executionResult;
-    accState.bridgeStatus.telemetryRecord = telemetryRecord;
-    accState.bridgeStatus.unifiedSnapshot = unifiedSnapshot;
-    accState.bridgeStatus.initialSyncCompleted = true;
-    accState.lastTick = { symbol, ask, bid, spread, timestamp: now.toISOString() };
-    accState.config.lastActiveAt = now.toISOString();
-
     this.latestUnifiedSnapshot = unifiedSnapshot;
     this.initialSyncCompleted = true;
 
-    // Synchronize current UI active state if target account matches activeAccountId or active account is disconnected
-    const currentActiveState = this.accountsMap.get(this.activeAccountId);
-    if (targetAccountId === this.activeAccountId || !currentActiveState?.bridgeStatus.isConnected) {
-      this.activeAccountId = targetAccountId;
-      this.state.bridgeStatus.isConnected = true;
-      this.state.bridgeStatus.lastHeartbeat = now.toISOString();
-      this.state.bridgeStatus.latencyMs = latencyMs;
-      this.state.bridgeStatus.accountInfo = accountInfo;
-      this.state.bridgeStatus.dataQuality = dataQuality;
-      this.state.bridgeStatus.riskAssessment = riskAssessment;
-      this.state.bridgeStatus.strategySignal = strategySignal;
-      this.state.bridgeStatus.executionResult = executionResult;
-      this.state.bridgeStatus.telemetryRecord = telemetryRecord;
-      this.state.bridgeStatus.unifiedSnapshot = unifiedSnapshot;
-      this.state.bridgeStatus.initialSyncCompleted = true;
+    // Update internal state
+    this.state.bridgeStatus.isConnected = true;
+    this.state.bridgeStatus.lastHeartbeat = now.toISOString();
+    this.state.bridgeStatus.latencyMs = latencyMs;
+    this.state.bridgeStatus.accountInfo = accountInfo;
+    this.state.bridgeStatus.dataQuality = dataQuality;
+    this.state.bridgeStatus.riskAssessment = riskAssessment;
+    this.state.bridgeStatus.strategySignal = strategySignal;
+    this.state.bridgeStatus.executionResult = executionResult;
+    this.state.bridgeStatus.telemetryRecord = telemetryRecord;
+    this.state.bridgeStatus.unifiedSnapshot = unifiedSnapshot;
+    this.state.bridgeStatus.initialSyncCompleted = true;
 
-      this.state.lastTick = {
-        symbol,
-        ask,
-        bid,
-        spread,
-        timestamp: now.toISOString(),
-      };
-    }
+    this.state.lastTick = {
+      symbol,
+      ask,
+      bid,
+      spread,
+      timestamp: now.toISOString(),
+    };
 
     // Autonomous trading check
     this.runAutonomousScalpCheck();
 
-    const ordersToExecute = (targetAccountId === this.activeAccountId ? this.state.pendingOrders : accState.pendingOrders).filter((o) => o.status === 'pending');
+    const ordersToExecute = this.state.pendingOrders.filter((o) => o.status === 'pending');
     return { pendingOrders: ordersToExecute, dataQuality };
   }
 
@@ -1963,12 +1034,10 @@ ${compactChatHistory.join('\n')}
     } else {
       const hasPending = this.state.pendingOrders.some((o) => o.status === 'pending');
       const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0;
-      const maxAllowedPositions = this.autonomousTrading.maxConcurrentPositions || 5;
       const timeSinceLastOrder = Date.now() - (this.autonomousTrading.lastOrderTime || 0);
 
-      if (openPositions < maxAllowedPositions && !hasPending && timeSinceLastOrder > 30000) {
-        const ask = this.state.lastTick?.ask;
-        if (!ask) return;
+      if (openPositions === 0 && !hasPending && timeSinceLastOrder > 30000) {
+        const ask = this.state.lastTick?.ask || 4107.81;
         const sl = Number((ask - 2.50).toFixed(2));
         const tp = Number((ask + 1.00).toFixed(2));
 
@@ -2000,16 +1069,12 @@ ${compactChatHistory.join('\n')}
     tp?: number;
     source: 'ai_agent' | 'user_manual' | 'telegram';
     clientOrderId?: string;
-    accountId?: string;
   }): { success: boolean; order?: TradeOrder; error?: string } {
     const clientOrderId = orderInput.clientOrderId || `cid_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const targetAccountId = orderInput.accountId || this.activeAccountId;
-    const targetAcc = this.getOrCreateAccountState(targetAccountId);
 
     // Check Idempotency: Prevent duplicate execution if this order was already processed
     if (this.processedClientOrderIds.has(clientOrderId)) {
       const existingOrder =
-        targetAcc.pendingOrders.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId) ||
         this.state.pendingOrders.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId) ||
         this.state.orderHistory.find((o) => o.clientOrderId === clientOrderId || o.id === clientOrderId);
       if (existingOrder) {
@@ -2041,15 +1106,13 @@ ${compactChatHistory.join('\n')}
       status: 'pending',
       createdAt: new Date().toISOString(),
       source: orderInput.source,
-      accountId: targetAccountId,
     };
 
-    targetAcc.pendingOrders.push(newOrder);
     this.state.pendingOrders.push(newOrder);
     supabaseService.logOrder(newOrder).catch(() => {});
     this.logTradingActivity(
       'order_dispatched',
-      `سفارش جدید ${newOrder.type} روی نماد ${newOrder.symbol} (حجم: ${newOrder.lot}) با شناسه ${clientOrderId} در حساب ${targetAccountId} صادر و در صف ارسال قرار گرفت.`,
+      `سفارش جدید ${newOrder.type} روی نماد ${newOrder.symbol} (حجم: ${newOrder.lot}) با شناسه ${clientOrderId} صادر و در صف ارسال قرار گرفت.`,
       newOrder
     );
 
@@ -2095,7 +1158,11 @@ ${compactChatHistory.join('\n')}
     return true;
   }
 
-
+  public updateRiskRules(rules: RiskRule[]): void {
+    this.state.riskRules = rules;
+    supabaseService.saveRiskRules(rules).catch(() => {});
+    this.logTradingActivity('ai_analysis', 'قوانین مدیریت ریسک و استراتژی توسط کاربر به‌روزرسانی شد.', rules);
+  }
 
   public logTradingActivity(type: AgentTradingLog['type'], message: string, data?: any): void {
     const log: AgentTradingLog = {
@@ -2143,10 +1210,6 @@ int OnInit()
 {
    EventSetTimer(InpCheckInterval);
    trade.SetExpertMagicNumber(InpMagicNumber);
-   if(GlobalVariableCheck("Hermes_Seq_Counter"))
-   {
-      g_sequenceCounter = (long)GlobalVariableGet("Hermes_Seq_Counter");
-   }
    Print("[Hermes Bridge v2.0] Ambassador EA Started. Target Server: ", InpServerUrl);
    return(INIT_SUCCEEDED);
 }
@@ -2210,7 +1273,6 @@ void SendUnifiedSnapshotAndPoll()
 {
    g_lastCheckTime = TimeCurrent();
    g_sequenceCounter++;
-   GlobalVariableSet("Hermes_Seq_Counter", (double)g_sequenceCounter);
 
    string symbol = _Symbol;
    if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
@@ -2300,9 +1362,9 @@ void SendUnifiedSnapshotAndPoll()
       string responseJson = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
       ParseAndDispatchActions(responseJson);
    }
-   else
+   else if(res == -1)
    {
-      PrintFormat("[Hermes Bridge ERROR] WebRequest HTTP status: %d | Last Error: %d", res, GetLastError());
+      Print("[Hermes Bridge ERROR] WebRequest failed. Code: ", GetLastError());
    }
 }
 
@@ -2390,28 +1452,10 @@ void ParseAndDispatchActions(string jsonStr)
             newTP = StringToDouble(StringSubstr(jsonStr, tpPos + 8, endTp - (tpPos + 8)));
          }
 
-         if(ticket > 0 && PositionSelectByTicket(ticket))
+         if(ticket > 0 && newSL > 0)
          {
-            string posSymbol = PositionGetString(POSITION_SYMBOL);
-            long posType = PositionGetInteger(POSITION_TYPE);
-            double currentPrice = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(posSymbol, SYMBOL_ASK) : SymbolInfoDouble(posSymbol, SYMBOL_BID);
-
-            bool slValid = true;
-            if(newSL > 0.0)
-            {
-               if(posType == POSITION_TYPE_BUY && newSL >= currentPrice) slValid = false;
-               if(posType == POSITION_TYPE_SELL && newSL <= currentPrice) slValid = false;
-            }
-
-            if(!slValid)
-            {
-               PrintFormat("[Hermes Guard Violation] Invalid PositionModify Ticket #%d: newSL (%.5f) violates directional rule against current price (%.5f).", ticket, newSL, currentPrice);
-            }
-            else
-            {
-               bool modSuccess = trade.PositionModify(ticket, newSL, newTP);
-               PrintFormat("[Hermes Protection] PositionModify Ticket #%d -> NewSL: %.5f | NewTP: %.5f | Success: %s", ticket, newSL, newTP, modSuccess ? "TRUE" : "FALSE");
-            }
+            bool modSuccess = trade.PositionModify(ticket, newSL, newTP);
+            PrintFormat("[Hermes Protection] PositionModify Ticket #%d -> NewSL: %.2f | Success: %s", ticket, newSL, modSuccess ? "TRUE" : "FALSE");
          }
 
          modPos = StringFind(jsonStr, "\\"ticket\\":", modPos + 10);
@@ -2429,19 +1473,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    double price = 0;
    string errorMsg = "";
 
-   // 1. Lot Size Broker Limits Guard
-   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-   if((typeStr == "BUY" || typeStr == "SELL") && (lot < minLot || lot > maxLot))
-   {
-      errorMsg = StringFormat("Order Rejected: Requested lot (%.2f) outside broker limits [Min: %.2f, Max: %.2f].", lot, minLot, maxLot);
-      PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
-      SendOrderResult(orderId, "failed", 0, errorMsg);
-      RegisterExecutedOrder(orderId);
-      return;
-   }
-
-   // 2. Mandatory Stop Loss Guard Enforcement
+   // 1. Mandatory Stop Loss Guard Enforcement
    if(InpEnforceSL && (typeStr == "BUY" || typeStr == "SELL") && sl <= 0.0)
    {
       errorMsg = "Order Rejected: Mandatory Stop Loss (InpEnforceSL) requirement violated (SL is 0).";
@@ -2454,7 +1486,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    if(typeStr == "BUY")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      // 3. Directional SL Validation Guard for BUY (SL must be below Ask)
+      // 2. Directional SL Validation Guard for BUY (SL must be below Ask)
       if(sl > 0.0 && sl >= price)
       {
          errorMsg = StringFormat("Order Rejected: BUY Stop Loss (%.5f) must be strictly below Ask price (%.5f).", sl, price);
@@ -2468,7 +1500,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    else if(typeStr == "SELL")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
-      // 3. Directional SL Validation Guard for SELL (SL must be above Bid)
+      // 2. Directional SL Validation Guard for SELL (SL must be above Bid)
       if(sl > 0.0 && sl <= price)
       {
          errorMsg = StringFormat("Order Rejected: SELL Stop Loss (%.5f) must be strictly above Bid price (%.5f).", sl, price);
@@ -2481,7 +1513,6 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    }
    else if(typeStr == "CLOSE_ALL")
    {
-      int attemptedCount = 0;
       int closedCount = 0;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
@@ -2490,26 +1521,14 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
          {
             if(PositionGetInteger(POSITION_MAGIC) == (long)InpMagicNumber)
             {
-               attemptedCount++;
-               if(trade.PositionClose(ticket))
-               {
-                  closedCount++;
-               }
+               trade.PositionClose(ticket);
+               closedCount++;
             }
          }
       }
-      success = (attemptedCount == 0 || closedCount == attemptedCount);
+      success = true;
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
-      if(!success)
-      {
-         errorMsg = StringFormat("CloseAll incomplete: %d of %d positions closed. CTrade Error %d: %s", closedCount, attemptedCount, trade.ResultRetcode(), trade.ResultComment());
-         PrintFormat("[Hermes CloseAll Failed] %s", errorMsg);
-      }
-      else
-      {
-         PrintFormat("[Hermes CloseAll Success] Closed %d positions matching Magic #%d", closedCount, InpMagicNumber);
-         RegisterExecutedOrder(orderId);
-      }
+      PrintFormat("[Hermes CloseAll] Closed %d positions matching Magic #%d", closedCount, InpMagicNumber);
    }
 
    if(!success && typeStr != "CLOSE_ALL")
@@ -2530,22 +1549,21 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
 void SendOrderResult(string orderId, string status, double price, string errorMsg)
 {
    string resultUrl = InpServerUrl;
-   int tickPos = StringFind(resultUrl, "/api/trading/tick");
-   if(tickPos >= 0)
+   int pos = StringFind(resultUrl, "/api/trading/tick");
+   if(pos >= 0)
    {
-      resultUrl = StringSubstr(resultUrl, 0, tickPos) + "/api/trading/order-result";
+      resultUrl = StringSubstr(resultUrl, 0, pos) + "/api/trading/order-result";
    }
    else
    {
-      int apiPos = StringFind(resultUrl, "/api/");
-      if(apiPos >= 0)
+      int lastSlash = StringFind(resultUrl, "/api/");
+      if(lastSlash >= 0)
       {
-         resultUrl = StringSubstr(resultUrl, 0, apiPos) + "api/trading/order-result";
+         resultUrl = StringSubstr(resultUrl, 0, lastSlash) + "order-result";
       }
       else
       {
-         PrintFormat("[Hermes Bridge ERROR] Unable to construct order-result URL from InpServerUrl: '%s'. Notification skipped.", InpServerUrl);
-         return;
+         resultUrl = StringFormat("%s/api/trading/order-result", "${cleanUrl}");
       }
    }
 
