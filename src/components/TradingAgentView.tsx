@@ -15,6 +15,7 @@ import {
   Zap,
   DollarSign,
   Globe,
+  Compass,
   Sliders,
   Play,
   XCircle,
@@ -30,9 +31,14 @@ import {
   Layers,
   Send,
   Bookmark,
+  CheckCheck,
+  Loader2,
 } from 'lucide-react';
 import { TradingState, RiskRule, TradeOrder } from '../types';
 import { supabase } from '../lib/supabaseClient';
+import { MultiAccountManager } from './MultiAccountManager';
+import { TradeJournalView } from './TradeJournalView';
+import { TradingCopilotView } from './TradingCopilotView';
 
 interface TradingAgentViewProps {
   adminToken?: string | null;
@@ -83,6 +89,10 @@ int OnInit()
 {
    EventSetTimer(InpCheckInterval);
    trade.SetExpertMagicNumber(InpMagicNumber);
+   if(GlobalVariableCheck("Hermes_Seq_Counter"))
+   {
+      g_sequenceCounter = (long)GlobalVariableGet("Hermes_Seq_Counter");
+   }
    Print("[Hermes Bridge v2.0] Ambassador EA Started. Target Server: ", InpServerUrl);
    return(INIT_SUCCEEDED);
 }
@@ -146,6 +156,7 @@ void SendUnifiedSnapshotAndPoll()
 {
    g_lastCheckTime = TimeCurrent();
    g_sequenceCounter++;
+   GlobalVariableSet("Hermes_Seq_Counter", (double)g_sequenceCounter);
 
    string symbol = _Symbol;
    if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
@@ -235,9 +246,9 @@ void SendUnifiedSnapshotAndPoll()
       string responseJson = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
       ParseAndDispatchActions(responseJson);
    }
-   else if(res == -1)
+   else
    {
-      Print("[Hermes Bridge ERROR] WebRequest failed. Code: ", GetLastError());
+      PrintFormat("[Hermes Bridge ERROR] WebRequest HTTP status: %d | Last Error: %d", res, GetLastError());
    }
 }
 
@@ -325,10 +336,28 @@ void ParseAndDispatchActions(string jsonStr)
             newTP = StringToDouble(StringSubstr(jsonStr, tpPos + 8, endTp - (tpPos + 8)));
          }
 
-         if(ticket > 0 && newSL > 0)
+         if(ticket > 0 && PositionSelectByTicket(ticket))
          {
-            bool modSuccess = trade.PositionModify(ticket, newSL, newTP);
-            PrintFormat("[Hermes Protection] PositionModify Ticket #%d -> NewSL: %.2f | Success: %s", ticket, newSL, modSuccess ? "TRUE" : "FALSE");
+            string posSymbol = PositionGetString(POSITION_SYMBOL);
+            long posType = PositionGetInteger(POSITION_TYPE);
+            double currentPrice = (posType == POSITION_TYPE_BUY) ? SymbolInfoDouble(posSymbol, SYMBOL_ASK) : SymbolInfoDouble(posSymbol, SYMBOL_BID);
+
+            bool slValid = true;
+            if(newSL > 0.0)
+            {
+               if(posType == POSITION_TYPE_BUY && newSL >= currentPrice) slValid = false;
+               if(posType == POSITION_TYPE_SELL && newSL <= currentPrice) slValid = false;
+            }
+
+            if(!slValid)
+            {
+               PrintFormat("[Hermes Guard Violation] Invalid PositionModify Ticket #%d: newSL (%.5f) violates directional rule against current price (%.5f).", ticket, newSL, currentPrice);
+            }
+            else
+            {
+               bool modSuccess = trade.PositionModify(ticket, newSL, newTP);
+               PrintFormat("[Hermes Protection] PositionModify Ticket #%d -> NewSL: %.5f | NewTP: %.5f | Success: %s", ticket, newSL, newTP, modSuccess ? "TRUE" : "FALSE");
+            }
          }
 
          modPos = StringFind(jsonStr, "\\"ticket\\":", modPos + 10);
@@ -346,7 +375,19 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    double price = 0;
    string errorMsg = "";
 
-   // 1. Mandatory Stop Loss Guard Enforcement
+   // 1. Lot Size Broker Limits Guard
+   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   if((typeStr == "BUY" || typeStr == "SELL") && (lot < minLot || lot > maxLot))
+   {
+      errorMsg = StringFormat("Order Rejected: Requested lot (%.2f) outside broker limits [Min: %.2f, Max: %.2f].", lot, minLot, maxLot);
+      PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
+      SendOrderResult(orderId, "failed", 0, errorMsg);
+      RegisterExecutedOrder(orderId);
+      return;
+   }
+
+   // 2. Mandatory Stop Loss Guard Enforcement
    if(InpEnforceSL && (typeStr == "BUY" || typeStr == "SELL") && sl <= 0.0)
    {
       errorMsg = "Order Rejected: Mandatory Stop Loss (InpEnforceSL) requirement violated (SL is 0).";
@@ -359,7 +400,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    if(typeStr == "BUY")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      // 2. Directional SL Validation Guard for BUY (SL must be below Ask)
+      // 3. Directional SL Validation Guard for BUY (SL must be below Ask)
       if(sl > 0.0 && sl >= price)
       {
          errorMsg = StringFormat("Order Rejected: BUY Stop Loss (%.5f) must be strictly below Ask price (%.5f).", sl, price);
@@ -373,7 +414,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    else if(typeStr == "SELL")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
-      // 2. Directional SL Validation Guard for SELL (SL must be above Bid)
+      // 3. Directional SL Validation Guard for SELL (SL must be above Bid)
       if(sl > 0.0 && sl <= price)
       {
          errorMsg = StringFormat("Order Rejected: SELL Stop Loss (%.5f) must be strictly above Bid price (%.5f).", sl, price);
@@ -386,6 +427,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    }
    else if(typeStr == "CLOSE_ALL")
    {
+      int attemptedCount = 0;
       int closedCount = 0;
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
@@ -394,14 +436,26 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
          {
             if(PositionGetInteger(POSITION_MAGIC) == (long)InpMagicNumber)
             {
-               trade.PositionClose(ticket);
-               closedCount++;
+               attemptedCount++;
+               if(trade.PositionClose(ticket))
+               {
+                  closedCount++;
+               }
             }
          }
       }
-      success = true;
+      success = (attemptedCount == 0 || closedCount == attemptedCount);
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
-      PrintFormat("[Hermes CloseAll] Closed %d positions matching Magic #%d", closedCount, InpMagicNumber);
+      if(!success)
+      {
+         errorMsg = StringFormat("CloseAll incomplete: %d of %d positions closed. CTrade Error %d: %s", closedCount, attemptedCount, trade.ResultRetcode(), trade.ResultComment());
+         PrintFormat("[Hermes CloseAll Failed] %s", errorMsg);
+      }
+      else
+      {
+         PrintFormat("[Hermes CloseAll Success] Closed %d positions matching Magic #%d", closedCount, InpMagicNumber);
+         RegisterExecutedOrder(orderId);
+      }
    }
 
    if(!success && typeStr != "CLOSE_ALL")
@@ -421,21 +475,22 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
 void SendOrderResult(string orderId, string status, double price, string errorMsg)
 {
    string resultUrl = InpServerUrl;
-   int pos = StringFind(resultUrl, "/api/trading/tick");
-   if(pos >= 0)
+   int tickPos = StringFind(resultUrl, "/api/trading/tick");
+   if(tickPos >= 0)
    {
-      resultUrl = StringSubstr(resultUrl, 0, pos) + "/api/trading/order-result";
+      resultUrl = StringSubstr(resultUrl, 0, tickPos) + "/api/trading/order-result";
    }
    else
    {
-      int lastSlash = StringFind(resultUrl, "/api/");
-      if(lastSlash >= 0)
+      int apiPos = StringFind(resultUrl, "/api/");
+      if(apiPos >= 0)
       {
-         resultUrl = StringSubstr(resultUrl, 0, lastSlash) + "order-result";
+         resultUrl = StringSubstr(resultUrl, 0, apiPos) + "api/trading/order-result";
       }
       else
       {
-         resultUrl = StringFormat("%s/api/trading/order-result", "${origin}");
+         PrintFormat("[Hermes Bridge ERROR] Unable to construct order-result URL from InpServerUrl: '%s'. Notification skipped.", InpServerUrl);
+         return;
       }
    }
 
@@ -461,10 +516,113 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [supabaseSql, setSupabaseSql] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('https://dqhujeggbndwcavzgnhm.supabase.co');
   const [supabaseAnonKey, setSupabaseAnonKey] = useState<string>('');
-  const [activeSubTab, setActiveSubTab] = useState<'terminal' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('telemetry');
+  const [activeSubTab, setActiveSubTab] = useState<'copilot' | 'accounts' | 'journal' | 'terminal' | 'risk' | 'prompt' | 'telemetry' | 'supabase' | 'mql' | 'logs'>('copilot');
+  const [activeAccountId, setActiveAccountId] = useState<string>('');
+
+  // Customizable Risk Engine State
+  const [riskRules, setRiskRules] = useState<RiskRule[]>([]);
+  const [riskSaveMsg, setRiskSaveMsg] = useState<string | null>(null);
+  const [isSavingRisk, setIsSavingRisk] = useState(false);
+  const [newRuleId, setNewRuleId] = useState('');
+  const [newRuleDesc, setNewRuleDesc] = useState('');
 
   // Telemetry & Inspector State
   const [telemetryData, setTelemetryData] = useState<any | null>(null);
+
+  const fetchRiskRules = async () => {
+    try {
+      let res = await fetch('/api/trading/risk-rules');
+      if (!res.ok) {
+        res = await fetch('/api/trading/rules');
+      }
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rules && Array.isArray(data.rules)) {
+          setRiskRules(data.rules);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch risk rules:', err);
+    }
+  };
+
+  const handleSaveRiskRules = async (updatedRules?: RiskRule[]) => {
+    const targetRules = updatedRules || riskRules;
+    setIsSavingRisk(true);
+    setRiskSaveMsg(null);
+    try {
+      let res = await fetch('/api/trading/risk-rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: targetRules }),
+      });
+      if (!res.ok) {
+        res = await fetch('/api/trading/rules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rules: targetRules }),
+        });
+      }
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rules) setRiskRules(data.rules);
+        setRiskSaveMsg('تنظیمات و پارامترهای موتور ریسک با موفقیت در دیتابیس Supabase و حافظه سرور ذخیره و فعال شد.');
+        setTimeout(() => setRiskSaveMsg(null), 4000);
+        fetchTradingState();
+      } else {
+        setRiskSaveMsg('خطا در ذخیره‌سازی قوانین ریسک. لطفاً مجدداً تلاش کنید.');
+      }
+    } catch (err) {
+      console.error('Failed to save risk rules:', err);
+      setRiskSaveMsg('خطای ارتباط شبکه در ذخیره‌سازی قوانین ریسک.');
+    } finally {
+      setIsSavingRisk(false);
+    }
+  };
+
+  const handleToggleRule = (ruleId: string) => {
+    const updated = riskRules.map((r) =>
+      r.id === ruleId ? { ...r, isEnabled: !r.isEnabled } : r
+    );
+    setRiskRules(updated);
+    handleSaveRiskRules(updated);
+  };
+
+  const handleRuleValueChange = (ruleId: string, val: number) => {
+    const updated = riskRules.map((r) =>
+      r.id === ruleId ? { ...r, value: val } : r
+    );
+    setRiskRules(updated);
+  };
+
+  const handleAddCustomRule = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRuleName.trim() || !newRuleValue) return;
+
+    const id = newRuleId.trim() ? newRuleId.trim().toLowerCase().replace(/\s+/g, '_') : `rule_${Date.now()}`;
+    const newRule: RiskRule = {
+      id,
+      name: newRuleName.trim(),
+      description: newRuleDesc.trim() || 'قانون سفارشی تعریف‌شده توسط کاربر',
+      isEnabled: true,
+      value: Number(newRuleValue),
+      unit: newRuleUnit,
+    };
+
+    const updated = [...riskRules, newRule];
+    setRiskRules(updated);
+    setNewRuleId('');
+    setNewRuleName('');
+    setNewRuleDesc('');
+    setNewRuleValue('');
+    handleSaveRiskRules(updated);
+  };
+
+  const handleDeleteRule = (ruleId: string) => {
+    const updated = riskRules.filter((r) => r.id !== ruleId);
+    setRiskRules(updated);
+    handleSaveRiskRules(updated);
+  };
 
   const fetchTelemetryData = async () => {
     try {
@@ -509,8 +667,13 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     created_at: new Date().toISOString(),
   });
 
-  // New Order Form state
-  const [symbol, setSymbol] = useState('XAUUSD');
+  // New Order Form & Multi-Account state
+  const [multiAccountsList, setMultiAccountsList] = useState<any[]>([]);
+  const [liveSymbolsList, setLiveSymbolsList] = useState<{ symbol: string; source: string; lastPrice?: number }[]>([]);
+  const [orderAccountId, setOrderAccountId] = useState<string>('');
+  const [symbol, setSymbol] = useState('');
+  const [customSymbolInput, setCustomSymbolInput] = useState('');
+  const [isCustomSymbol, setIsCustomSymbol] = useState(false);
   const [orderType, setOrderType] = useState<'BUY' | 'SELL' | 'CLOSE_ALL'>('BUY');
   const [lot, setLot] = useState('0.01');
   const [sl, setSl] = useState('');
@@ -524,19 +687,38 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   const [newRuleUnit, setNewRuleUnit] = useState<RiskRule['unit']>('percentage');
 
   // Chat, Memory & System Prompt state
+  const chatMessagesBoxRef = React.useRef<HTMLDivElement>(null);
+  const isUserScrolledUpRef = React.useRef(false);
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[]>([
+  const [chatMessages, setChatMessages] = useState<{ id: string; sender: 'user' | 'agent'; text: string; timestamp: string; status?: 'sending' | 'delivered' }>([
     {
       id: 'welcome_msg_1',
       sender: 'agent',
       text: 'سلام! من ایجنت هوشمند معامله‌گر هرمس (Hermes) هستم. دستورات، درخواست معامله، تحلیل طلا یا قوانین جدیدی بفرمایید تا فوراً انجام دهم.',
       timestamp: new Date().toISOString(),
+      status: 'delivered',
     },
   ]);
   const [agentMemory, setAgentMemory] = useState<{ id: string; category: string; content: string; createdAt: string }[]>([]);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [memoryCat, setMemoryCat] = useState('قوانین کاربری');
   const [memoryContent, setMemoryContent] = useState('');
+
+  // Handle manual scroll detection to prevent forcing scroll when user moves up
+  const handleChatScroll = () => {
+    if (chatMessagesBoxRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatMessagesBoxRef.current;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 60;
+      isUserScrolledUpRef.current = !isAtBottom;
+    }
+  };
+
+  // Scroll ONLY the inner chat container to bottom on message updates if user is at the bottom
+  useEffect(() => {
+    if (chatMessagesBoxRef.current && !isUserScrolledUpRef.current) {
+      chatMessagesBoxRef.current.scrollTop = chatMessagesBoxRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
 
   // 8-Stage Autonomous Engine state
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -590,7 +772,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   const fetchAgentMemoryAndChat = async () => {
     try {
-      const res = await fetch('/api/trading/memory');
+      const res = await fetch(`/api/trading/memory?accountId=${activeAccountId}`);
       if (res.ok) {
         const data = await res.json();
         if (data.memory) setAgentMemory(data.memory);
@@ -598,8 +780,16 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           setChatMessages((prev) => {
             const map = new Map<string, any>();
             prev.forEach((m) => map.set(m.id, m));
-            data.messages.forEach((m: any) => map.set(m.id, m));
-            return Array.from(map.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+            data.messages.forEach((m: any) => {
+              const existing = map.get(m.id);
+              map.set(m.id, {
+                ...m,
+                status: existing?.status === 'sending' ? 'sending' : 'delivered',
+              });
+            });
+            return Array.from(map.values()).sort(
+              (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            );
           });
         }
       }
@@ -616,30 +806,46 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     setChatInput('');
     setIsSendingChat(true);
 
+    // Force scroll to bottom on user send
+    isUserScrolledUpRef.current = false;
+
     const tempUserId = `user_${Date.now()}`;
     const tempUserMsg = {
       id: tempUserId,
       sender: 'user' as const,
       text: userText,
       timestamp: new Date().toISOString(),
+      status: 'sending' as const,
     };
 
     // Optimistically update chat state so user message never disappears
     setChatMessages((prev) => [...prev, tempUserMsg]);
 
+    setTimeout(() => {
+      if (chatMessagesBoxRef.current) {
+        chatMessagesBoxRef.current.scrollTop = chatMessagesBoxRef.current.scrollHeight;
+      }
+    }, 50);
+
     try {
       const res = await fetch('/api/trading/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: userText }),
+        body: JSON.stringify({ text: userText, accountId: activeAccountId }),
       });
       if (res.ok) {
         const data = await res.json();
         if (data.chatMessages && Array.isArray(data.chatMessages)) {
           setChatMessages((prev) => {
             const map = new Map<string, any>();
-            prev.forEach((m) => map.set(m.id, m));
-            data.chatMessages.forEach((m: any) => map.set(m.id, m));
+            prev.forEach((m) => {
+              if (m.id === tempUserId) {
+                map.set(m.id, { ...m, status: 'delivered' as const });
+              } else {
+                map.set(m.id, m);
+              }
+            });
+            data.chatMessages.forEach((m: any) => map.set(m.id, { ...m, status: 'delivered' as const }));
             return Array.from(map.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
           });
         }
@@ -651,8 +857,12 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           sender: 'agent' as const,
           text: 'مشکلی در پردازش دستور توسط سرور هرمس رخ داد. لطفاً دوباره تلاش کنید.',
           timestamp: new Date().toISOString(),
+          status: 'delivered' as const,
         };
-        setChatMessages((prev) => [...prev, errorMsg]);
+        setChatMessages((prev) => [
+          ...prev.map((m) => (m.id === tempUserId ? { ...m, status: 'delivered' as const } : m)),
+          errorMsg,
+        ]);
       }
     } catch (err) {
       console.error('Failed to send chat message:', err);
@@ -661,10 +871,19 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         sender: 'agent' as const,
         text: 'خطا در ارتباط با سرور. لطفا اتصال اینترنت خود را بررسی کنید.',
         timestamp: new Date().toISOString(),
+        status: 'delivered' as const,
       };
-      setChatMessages((prev) => [...prev, errorMsg]);
+      setChatMessages((prev) => [
+        ...prev.map((m) => (m.id === tempUserId ? { ...m, status: 'delivered' as const } : m)),
+        errorMsg,
+      ]);
     } finally {
       setIsSendingChat(false);
+      setTimeout(() => {
+        if (chatMessagesBoxRef.current && !isUserScrolledUpRef.current) {
+          chatMessagesBoxRef.current.scrollTop = chatMessagesBoxRef.current.scrollHeight;
+        }
+      }, 50);
     }
   };
 
@@ -676,7 +895,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       const res = await fetch('/api/trading/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category: memoryCat, content: memoryContent }),
+        body: JSON.stringify({ category: memoryCat, content: memoryContent, accountId: activeAccountId }),
       });
       if (res.ok) {
         setMemoryContent('');
@@ -689,7 +908,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
   const handleDeleteMemoryNote = async (id: string) => {
     try {
-      const res = await fetch(`/api/trading/memory/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/trading/memory/${id}?accountId=${activeAccountId}`, { method: 'DELETE' });
       if (res.ok) {
         fetchAgentMemoryAndChat();
       }
@@ -728,6 +947,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       if (res.ok) {
         const data = await res.json();
         setTradingState(data);
+        if (data.riskRules && Array.isArray(data.riskRules) && data.riskRules.length > 0) {
+          setRiskRules((prev) => (prev.length === 0 ? data.riskRules : prev));
+        }
       }
     } catch (err) {
       console.error('Failed to fetch trading state:', err);
@@ -746,6 +968,44 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     }
   };
 
+  const fetchMultiAccounts = async () => {
+    try {
+      const res = await fetch('/api/multi-accounts');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.accounts && Array.isArray(data.accounts)) {
+          setMultiAccountsList(data.accounts);
+          if (data.accounts.length > 0) {
+            if (data.activeAccountId) setActiveAccountId(data.activeAccountId);
+            setOrderAccountId((prev) => prev || data.activeAccountId || data.accounts[0].accountId);
+          } else {
+            setActiveAccountId('');
+            setOrderAccountId('');
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch multi accounts:', err);
+    }
+  };
+
+  const fetchLiveSymbols = async () => {
+    try {
+      const res = await fetch('/api/trading/symbols');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.symbols && Array.isArray(data.symbols)) {
+          setLiveSymbolsList(data.symbols);
+          if (data.symbols.length > 0 && !symbol) {
+            setSymbol(data.symbols[0].symbol);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch live symbols:', err);
+    }
+  };
+
   const fetchSupabaseSql = async () => {
     try {
       const res = await fetch('/api/trading/supabase-sql');
@@ -761,20 +1021,30 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
   };
 
   useEffect(() => {
+    if (activeAccountId) setOrderAccountId(activeAccountId);
+  }, [activeAccountId]);
+
+  useEffect(() => {
     fetchTradingState();
+    fetchMultiAccounts();
+    fetchLiveSymbols();
+    fetchRiskRules();
     fetchEaCode();
     fetchSupabaseSql();
     fetchUsersFromSupabase();
-    fetchAgentMemoryAndChat();
     fetchSystemPrompt();
     fetchTelemetryData();
+    fetchAgentMemoryAndChat();
+
     const interval = setInterval(() => {
       fetchTradingState();
+      fetchMultiAccounts();
+      fetchLiveSymbols();
       fetchAgentMemoryAndChat();
       fetchTelemetryData();
     }, 2500); // Live poll every 2.5s
     return () => clearInterval(interval);
-  }, []);
+  }, [activeAccountId]);
 
   const handleRegisterUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -846,12 +1116,21 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     setOrderError(null);
     setOrderSuccess(null);
 
+    const activeSym = isCustomSymbol ? customSymbolInput.trim() : symbol;
+    if (!activeSym) {
+      setOrderError('لطفاً نماد معاملاتی را انتخاب یا وارد نمایید.');
+      return;
+    }
+
+    const targetAccId = orderAccountId || activeAccountId;
+
     try {
       const res = await fetch('/api/trading/order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          symbol,
+          accountId: targetAccId,
+          symbol: activeSym,
           type: orderType,
           lot: parseFloat(lot) || 0.01,
           sl: sl ? parseFloat(sl) : undefined,
@@ -865,7 +1144,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       if (!res.ok) {
         setOrderError(data.error || 'خطا در ثبت سفارش');
       } else {
-        setOrderSuccess(`سفارش ${orderType} با موفقیت در صف ارسال به MT5 قرار گرفت.`);
+        setOrderSuccess(`سفارش ${orderType} روی نماد ${activeSym} (حساب ${targetAccId}) با موفقیت در صف ارسال به MT5 قرار گرفت.`);
         fetchTradingState();
       }
     } catch (err: unknown) {
@@ -932,57 +1211,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     }
   };
 
-  // Toggle or Edit Risk Rule
-  const handleToggleRule = async (ruleId: string) => {
-    if (!tradingState) return;
-    const updatedRules = tradingState.riskRules.map((r) =>
-      r.id === ruleId ? { ...r, isEnabled: !r.isEnabled } : r
-    );
-    await saveRules(updatedRules);
-  };
 
-  const handleRuleValueChange = async (ruleId: string, newValue: string) => {
-    if (!tradingState) return;
-    const valNum = parseFloat(newValue);
-    const updatedRules = tradingState.riskRules.map((r) =>
-      r.id === ruleId ? { ...r, value: isNaN(valNum) ? newValue : valNum } : r
-    );
-    await saveRules(updatedRules);
-  };
-
-  const saveRules = async (rules: RiskRule[]) => {
-    try {
-      const res = await fetch('/api/trading/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules }),
-      });
-      if (res.ok) {
-        fetchTradingState();
-      }
-    } catch (err) {
-      console.error('Failed to save rules:', err);
-    }
-  };
-
-  const handleAddCustomRule = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newRuleName.trim() || !tradingState) return;
-
-    const newRule: RiskRule = {
-      id: `custom_${Date.now()}`,
-      name: newRuleName,
-      description: 'قانون سفارشی تعریف شده توسط کاربر',
-      isEnabled: true,
-      value: parseFloat(newRuleValue) || newRuleValue,
-      unit: newRuleUnit,
-    };
-
-    const updatedRules = [...tradingState.riskRules, newRule];
-    await saveRules(updatedRules);
-    setNewRuleName('');
-    setNewRuleValue('');
-  };
 
   const handleCopyCode = () => {
     navigator.clipboard.writeText(mqlCode);
@@ -1133,10 +1362,59 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex items-center gap-2 border-b border-gray-200 pb-2">
+      <div className="flex items-center gap-2 border-b border-gray-200 pb-2 overflow-x-auto">
+        <button
+          onClick={() => setActiveSubTab('copilot')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'copilot'
+              ? 'bg-indigo-900 text-white shadow-md font-extrabold border border-indigo-700'
+              : 'text-indigo-900 bg-indigo-50/80 hover:bg-indigo-100'
+          }`}
+        >
+          <Bot className="w-4 h-4 text-indigo-400 animate-pulse" />
+          <span>دستیار و تحلیل‌گر هوشمند (AI Copilot)</span>
+          <span className="px-1.5 py-0.2 rounded text-[10px] bg-amber-400 text-slate-950 font-black">جدید</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('accounts')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'accounts'
+              ? 'bg-blue-700 text-white shadow-sm font-bold'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Layers className="w-4 h-4 text-sky-300" />
+          <span>مدیریت حساب‌های چندگانه (Multi-Account)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('journal')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'journal'
+              ? 'bg-indigo-700 text-white shadow-sm font-bold'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Bookmark className="w-4 h-4 text-indigo-300" />
+          <span>ژورنال معاملات AI (Trade Journal)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('risk')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+            activeSubTab === 'risk'
+              ? 'bg-amber-600 text-white shadow-sm font-bold'
+              : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <ShieldCheck className="w-4 h-4 text-emerald-300" />
+          <span>موتور ریسک قابل شخصی‌سازی (Risk Engine)</span>
+        </button>
+
         <button
           onClick={() => setActiveSubTab('terminal')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'terminal'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1148,7 +1426,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('prompt')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'prompt'
               ? 'bg-indigo-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1160,7 +1438,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('telemetry')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'telemetry'
               ? 'bg-purple-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1172,7 +1450,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('supabase')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'supabase'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1184,7 +1462,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('mql')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'mql'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1196,7 +1474,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
         <button
           onClick={() => setActiveSubTab('logs')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
             activeSubTab === 'logs'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-gray-600 hover:bg-gray-100'
@@ -1206,6 +1484,315 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           <span>حافظه و لاگ‌های ایجنت</span>
         </button>
       </div>
+
+      {/* SUB-TAB: AI Trading Copilot / Analyst */}
+      {activeSubTab === 'copilot' && (
+        <TradingCopilotView
+          activeAccountId={activeAccountId}
+          onRefreshState={fetchTradingState}
+        />
+      )}
+
+      {/* SUB-TAB: Multi-Account Manager */}
+      {activeSubTab === 'accounts' && (
+        <MultiAccountManager
+          activeAccountId={activeAccountId}
+          onAccountSelect={(accId) => {
+            setActiveAccountId(accId);
+            fetchTradingState();
+            fetchAgentMemoryAndChat();
+          }}
+        />
+      )}
+
+      {/* SUB-TAB: AI Trade Journal */}
+      {activeSubTab === 'journal' && (
+        <TradeJournalView activeAccountId={activeAccountId} />
+      )}
+
+      {/* SUB-TAB: Customizable Risk Engine */}
+      {activeSubTab === 'risk' && (
+        <div className="space-y-6">
+          {/* Top Banner Card */}
+          <div className="bg-gradient-to-r from-slate-900 via-amber-950 to-slate-900 text-white p-6 rounded-2xl shadow-lg border border-amber-900/50 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-6 h-6 text-amber-400" />
+                  <h2 className="text-base font-extrabold text-white">
+                    شخصی‌سازی و تنظیمات پیشرفته موتور ریسک (Customizable Risk Engine)
+                  </h2>
+                </div>
+                <p className="text-xs text-amber-200 leading-relaxed max-w-3xl">
+                  موتور ریسک سیستم هرمس کاملاً پویا و قابل شخصی‌سازی است. شما می‌توانید آستانه‌های مجاز برای ریسک در هر معامله، زیان روزانه، سقف لات، حداکثر پوزیشن‌های باز، اسپرد، تاخیر تیک و الزامی بودن حد ضرر را مطابق با استراتژی شخصی خود تغییر داده و ذخیره کنید.
+                </p>
+              </div>
+
+              <button
+                onClick={() => handleSaveRiskRules()}
+                disabled={isSavingRisk}
+                className="px-5 py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 shrink-0 border border-amber-300/30"
+              >
+                <Check className={`w-4 h-4 ${isSavingRisk ? 'animate-spin' : ''}`} />
+                <span>{isSavingRisk ? 'در حال ذخیره‌سازی...' : 'ذخیره و اعمال فوری قوانین ریسک'}</span>
+              </button>
+            </div>
+
+            {riskSaveMsg && (
+              <div className="p-3 bg-emerald-500/20 border border-emerald-400/40 rounded-xl text-xs text-emerald-200 flex items-center gap-2 font-bold">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{riskSaveMsg}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Master Switch Banner */}
+          {(() => {
+            const masterRule = riskRules.find((r) => r.id === 'enable_risk_guard');
+            const isEnabled = masterRule ? masterRule.isEnabled : true;
+            return (
+              <div className={`p-5 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm ${
+                isEnabled ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950' : 'bg-amber-50/80 border-amber-200 text-amber-950'
+              }`}>
+                <div className="flex items-center gap-3">
+                  <div className={`p-3 rounded-xl ${isEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                    <Shield className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold flex items-center gap-2">
+                      <span>کلید اصلی فعال‌سازی موتور ریسک (Master Guard Switch)</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        isEnabled ? 'bg-emerald-200 text-emerald-800' : 'bg-amber-200 text-amber-900'
+                      }`}>
+                        {isEnabled ? 'محافظت زنده و فعال' : 'غیرفعال (مستقیم و بدون فیلتر)'}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-gray-600 mt-1">
+                      {isEnabled
+                        ? 'موتور ریسک با قوانین تعریف‌شده زیر تمام معاملات را قبل از ارسال به متاتریدر ارزیابی و فیلتر می‌کند.'
+                        : 'توجه: با غیرفعال کردن کلید اصلی، سفارشات بدون بررسی قوانین ریسک مستقیماً اجرا می‌شوند.'}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => handleToggleRule('enable_risk_guard')}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 shrink-0 shadow-sm ${
+                    isEnabled ? 'bg-rose-600 hover:bg-rose-700 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>{isEnabled ? 'غیرفعال‌سازی موقت کلید اصلی' : 'فعال‌سازی کامل محافظت ریسک'}</span>
+                </button>
+              </div>
+            );
+          })()}
+
+          {/* Real-time Assessment Output */}
+          {tradingState?.riskAssessment && (
+            <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+                <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-indigo-600" />
+                  <span>ارزیابی لحظه‌ای موتور ریسک بر اساس آخرین وضعیت بازار و قوانین فعال</span>
+                </h3>
+                <div className="flex items-center gap-2 font-mono text-xs">
+                  <span className="text-gray-500 font-sans">امتیاز ریسک:</span>
+                  <span className={`px-2.5 py-1 rounded-full font-bold text-[11px] ${
+                    (tradingState.riskAssessment.riskScore || 0) < 30
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : (tradingState.riskAssessment.riskScore || 0) < 65
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-rose-100 text-rose-800'
+                  }`}>
+                    {tradingState.riskAssessment.riskScore || 0} / 100
+                  </span>
+                  <span className={`px-2.5 py-1 rounded-full font-bold font-sans text-[11px] ${
+                    tradingState.riskAssessment.isAllowed
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      : 'bg-rose-100 text-rose-800 border border-rose-300'
+                  }`}>
+                    توصیه: {tradingState.riskAssessment.recommendation || (tradingState.riskAssessment.isAllowed ? 'PROCEED' : 'REJECT')}
+                  </span>
+                </div>
+              </div>
+
+              {tradingState.riskAssessment.failedRules && tradingState.riskAssessment.failedRules.length > 0 ? (
+                <div className="space-y-2">
+                  <span className="text-xs font-bold text-rose-700 block">خطاهای نقض قوانین ریسک:</span>
+                  {tradingState.riskAssessment.failedRules.map((rule: any, idx: number) => (
+                    <div key={idx} className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <span className="font-bold block">{rule.name}: {rule.reason}</span>
+                        <span className="font-mono text-[11px] text-rose-700">آستانه مجاز: {rule.threshold} | مقدار فعلی: {rule.actual}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-center gap-2 font-bold">
+                  <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>تمام شرایط و قوانین سفارشی ریسک برای انجام معامله احراز شده است (آماده به کار).</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Rules Management Grid */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3 border-gray-100">
+              <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <Sliders className="w-5 h-5 text-indigo-600" />
+                <span>جدول کامل قوانین و پارامترهای قابل شخصی‌سازی ریسک ({riskRules.length} قانون)</span>
+              </h3>
+
+              <button
+                onClick={() => handleSaveRiskRules()}
+                disabled={isSavingRisk}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shrink-0 shadow-sm"
+              >
+                <Check className="w-4 h-4" />
+                <span>ذخیره کلی تغییرات</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {riskRules.map((rule) => (
+                <div
+                  key={rule.id}
+                  className={`p-4 rounded-xl border transition-all space-y-3 ${
+                    rule.isEnabled ? 'bg-gray-50/80 border-gray-200' : 'bg-gray-100/60 border-gray-200 opacity-60'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-xs text-gray-900">{rule.name}</span>
+                        <span className="font-mono text-[10px] text-gray-400">({rule.id})</span>
+                      </div>
+                      <p className="text-[11px] text-gray-500 leading-relaxed">{rule.description}</p>
+                    </div>
+
+                    <button
+                      onClick={() => handleToggleRule(rule.id)}
+                      className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-colors shrink-0 ${
+                        rule.isEnabled
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-gray-200 text-gray-600 border border-gray-300'
+                      }`}
+                    >
+                      {rule.isEnabled ? 'فعال ✓' : 'غیرفعال'}
+                    </button>
+                  </div>
+
+                  {rule.unit !== 'boolean' ? (
+                    <div className="flex items-center gap-3 pt-2 border-t border-gray-200/60">
+                      <label className="text-xs font-semibold text-gray-700 shrink-0">مقدار آستانه:</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={rule.value}
+                        onChange={(e) => handleRuleValueChange(rule.id, Number(e.target.value))}
+                        className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 bg-white focus:outline-none focus:border-indigo-500"
+                      />
+                      <span className="px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 text-xs font-bold font-mono shrink-0">
+                        {rule.unit === 'percentage' ? '%' : rule.unit === 'lot' ? 'Lot' : rule.unit === 'usd' ? 'واحد' : rule.unit}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="pt-2 border-t border-gray-200/60 text-xs text-gray-600 font-medium">
+                      نوع قانون: کنترل منطقی بولی (Boolean Control)
+                    </div>
+                  )}
+
+                  {!['enable_risk_guard', 'max_risk_per_trade', 'max_daily_drawdown', 'max_lot_size', 'max_open_positions', 'require_sl_tp', 'max_spread_limit', 'max_tick_age_ms', 'min_margin_level'].includes(rule.id) && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        onClick={() => handleDeleteRule(rule.id)}
+                        className="text-[11px] text-rose-600 hover:text-rose-800 flex items-center gap-1 font-semibold"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>حذف قانون سفارشی</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Add Custom Risk Rule Form */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 border-b pb-3 border-gray-100">
+              <Plus className="w-4 h-4 text-emerald-600" />
+              <span>افزودن قانون سفارشی جدید به موتور ریسک</span>
+            </h3>
+
+            <form onSubmit={handleAddCustomRule} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 text-xs">
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">شناسه انگلیسی (ID)</label>
+                <input
+                  type="text"
+                  placeholder="مثال: max_weekend_risk"
+                  value={newRuleId}
+                  onChange={(e) => setNewRuleId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-gray-900 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">عنوان قانون (فارسی)</label>
+                <input
+                  type="text"
+                  placeholder="مثال: سقف لوریج آخر هفته"
+                  value={newRuleName}
+                  onChange={(e) => setNewRuleName(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">مقدار آستانه</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="مثال: 5"
+                  value={newRuleValue}
+                  onChange={(e) => setNewRuleValue(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono text-gray-900 focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-700 mb-1 font-semibold">واحد سنجش</label>
+                <select
+                  value={newRuleUnit}
+                  onChange={(e) => setNewRuleUnit(e.target.value as any)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="percentage">درصد (%)</option>
+                  <option value="lot">لات (Lot)</option>
+                  <option value="usd">مبلغ / عدد (USD/Units)</option>
+                  <option value="boolean">بولی (Boolean)</option>
+                </select>
+              </div>
+
+              <div className="flex items-end">
+                <button
+                  type="submit"
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-sm"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>افزودن قانون جدید</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* SUB-TAB 1: Terminal & Order Dispatcher */}
       {activeSubTab === 'terminal' && (
@@ -1234,37 +1821,100 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
             )}
 
             <form onSubmit={handleSendOrder} className="space-y-4">
-              {/* Symbol & Order Type */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">نماد (Symbol)</label>
-                  <input
-                    type="text"
-                    value={symbol}
-                    onChange={(e) => setSymbol(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 focus:outline-none focus:border-blue-500"
-                    placeholder="XAUUSD"
-                    required
-                  />
-                </div>
+              {/* Account Selection */}
+              <div>
+                <label className="block text-xs font-bold text-gray-800 mb-1 flex items-center gap-1">
+                  <Globe className="w-3.5 h-3.5 text-blue-600" />
+                  <span>انتخاب شماره حساب (Account Number)</span>
+                </label>
+                <select
+                  value={orderAccountId}
+                  onChange={(e) => {
+                    const accId = e.target.value;
+                    setOrderAccountId(accId);
+                    setActiveAccountId(accId);
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-900 bg-slate-50 focus:outline-none focus:border-blue-500 shadow-sm"
+                >
+                  {multiAccountsList.length > 0 ? (
+                    multiAccountsList.map((acc: any) => (
+                      <option key={acc.accountId} value={acc.accountId}>
+                        {acc.isConnected ? '🟢' : '🔴'} {acc.accountId} ({acc.name}) {acc.accountNumber ? ` - #${acc.accountNumber}` : ''} {acc.isConnected ? `- موجودی: $${acc.balance?.toFixed(2) || '0'}` : '(غیرفعال - در انتظار MT5)'}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={activeAccountId}>🔴 {activeAccountId} - (در انتظار اولین اتصال MQL5)</option>
+                  )}
+                </select>
+              </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">نوع سفارش</label>
-                  <select
-                    value={orderType}
-                    onChange={(e) => setOrderType(e.target.value as any)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs text-gray-900 focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="BUY">خرید (BUY)</option>
-                    <option value="SELL">فروش (SELL)</option>
-                    <option value="CLOSE_ALL">بستن همه پوزیشن‌ها (CLOSE ALL)</option>
-                  </select>
+              {/* Symbol Selection Dropdown ("منوی کشویی / کشوری انتخاب نماد") & Order Type */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-gray-800 flex items-center gap-1">
+                  <Compass className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>منوی کشویی انتخاب نماد (Symbol Country Menu - دریافت زنده از MT5)</span>
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <select
+                      value={isCustomSymbol ? 'CUSTOM' : symbol}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'CUSTOM') {
+                          setIsCustomSymbol(true);
+                        } else {
+                          setIsCustomSymbol(false);
+                          setSymbol(val);
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono font-bold text-gray-900 bg-white focus:outline-none focus:border-emerald-500 shadow-sm"
+                    >
+                      {liveSymbolsList.length > 0 ? (
+                        <optgroup label="📊 نمادهای دریافتی زنده از متاتریدر ۵ (Live MQL5 Ticks)">
+                          {liveSymbolsList.map((item) => (
+                            <option key={item.symbol} value={item.symbol}>
+                              {item.symbol} ({item.source}){item.lastPrice ? ` - $${item.lastPrice.toFixed(2)}` : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : (
+                        <option value="" disabled>🔴 در انتظار دریافت نماد زنده از MQL5 (تیکی دریافت نشده)</option>
+                      )}
+                      <optgroup label="✏️ انتخاب یا تایپ دستی">
+                        <option value="CUSTOM">تایپ دستی نماد دیگر (Custom Symbol)...</option>
+                      </optgroup>
+                    </select>
+
+                    {isCustomSymbol && (
+                      <input
+                        type="text"
+                        placeholder="نام نماد مثلاً: BTCUSD"
+                        value={customSymbolInput}
+                        onChange={(e) => setCustomSymbolInput(e.target.value.toUpperCase())}
+                        className="w-full mt-2 px-3 py-1.5 border border-amber-300 rounded-lg text-xs font-mono text-gray-900 bg-amber-50 focus:outline-none focus:border-amber-500"
+                        required
+                      />
+                    )}
+                  </div>
+
+                  <div>
+                    <select
+                      value={orderType}
+                      onChange={(e) => setOrderType(e.target.value as any)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-900 bg-white focus:outline-none focus:border-blue-500 shadow-sm"
+                    >
+                      <option value="BUY">🟢 خرید مستقیم (BUY)</option>
+                      <option value="SELL">🔴 فروش مستقیم (SELL)</option>
+                      <option value="CLOSE_ALL">⚠️ بستن همه پوزیشن‌ها (CLOSE ALL)</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
               {/* Lot Size, SL, TP */}
               {orderType !== 'CLOSE_ALL' && (
-                <div className="space-y-3">
+                <div className="space-y-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">حجم معامله (Lot)</label>
                     <input
@@ -1283,10 +1933,10 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                       <label className="block text-xs font-medium text-gray-700 mb-1">حد ضرر (Stop Loss)</label>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         value={sl}
                         onChange={(e) => setSl(e.target.value)}
-                        placeholder="مثال: 2640.00"
+                        placeholder="اختیاری"
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -1295,10 +1945,10 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                       <label className="block text-xs font-medium text-gray-700 mb-1">حد سود (Take Profit)</label>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         value={tp}
                         onChange={(e) => setTp(e.target.value)}
-                        placeholder="مثال: 2680.00"
+                        placeholder="اختیاری"
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono text-gray-900 focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -1308,7 +1958,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
               <button
                 type="submit"
-                className={`w-full py-2.5 rounded-lg text-xs font-bold text-white transition-colors flex items-center justify-center gap-2 ${
+                className={`w-full py-2.5 rounded-lg text-xs font-bold text-white transition-colors flex items-center justify-center gap-2 shadow-sm ${
                   orderType === 'BUY'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
                     : orderType === 'SELL'
@@ -1317,7 +1967,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                 }`}
               >
                 <Zap className="w-4 h-4" />
-                <span>ارسال سفارش به صف اجرا ({orderType})</span>
+                <span>ارسال و تست سفارش دستی ({orderType})</span>
               </button>
             </form>
           </div>
@@ -1425,7 +2075,12 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                               {ord.status === 'executed' ? (
                                 <span className="text-emerald-600 font-semibold font-sans">✓ با موفقیت</span>
                               ) : (
-                                <span className="text-rose-600 font-sans">{ord.error || 'خطا'}</span>
+                                <div className="flex flex-col text-right">
+                                  <span className="text-rose-600 font-bold font-sans">❌ خطا در اجرا</span>
+                                  <span className="text-[10px] text-rose-500 font-sans leading-tight mt-0.5 max-w-[200px] truncate" title={ord.error || 'خطای نا مشخص یا عدم تایید متاتریدر'}>
+                                    {ord.error || 'پاسخی در مهلت مقرر از متاتریدر دریافت نشد'}
+                                  </span>
+                                </div>
                               )}
                             </td>
                           </tr>
@@ -1699,9 +2354,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                   </span>
                 </div>
                 <div className="space-y-1 text-gray-600 text-[11px]">
-                  <p>حساب: <span className="font-mono text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.accountNumber || tradingState?.bridgeStatus?.accountInfo?.accountNumber || 9028145}</span></p>
-                  <p>بروکر: <span className="text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.broker || tradingState?.bridgeStatus?.accountInfo?.broker || '.Markets Ltd'}</span></p>
-                  <p>موجودی: <span className="font-mono font-bold text-emerald-700">${telemetryData?.bridgeStatus?.accountInfo?.balance ?? (tradingState?.bridgeStatus?.accountInfo?.balance ?? 971.49)}</span></p>
+                  <p>حساب: <span className="font-mono text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.accountNumber || tradingState?.bridgeStatus?.accountInfo?.accountNumber || '---'}</span></p>
+                  <p>بروکر: <span className="text-gray-800">{telemetryData?.bridgeStatus?.accountInfo?.broker || tradingState?.bridgeStatus?.accountInfo?.broker || 'در انتظار MQL5'}</span></p>
+                  <p>موجودی: <span className="font-mono font-bold text-emerald-700">${(telemetryData?.bridgeStatus?.accountInfo?.balance ?? tradingState?.bridgeStatus?.accountInfo?.balance) ?? 0}</span></p>
                 </div>
               </div>
 
@@ -2199,20 +2854,28 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
         <div className="space-y-6">
           {/* Section 1: Chat with Agent */}
           <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b pb-3 border-gray-100">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-3 border-gray-100">
               <div className="space-y-1">
                 <h2 className="text-sm font-bold text-gray-900 flex items-center gap-2">
                   <Bot className="w-4 h-4 text-indigo-600" />
-                  <span>گفتگوی مستقیم و ارسال دستور به ایجنت معامله‌گر (حافظه زنده Supabase)</span>
+                  <span>گفتگوی مستقیم و ارسال دستور به ایجنت معامله‌گر</span>
                 </h2>
                 <p className="text-xs text-gray-500">
-                  می‌توانید به زبان فارسی روان دستور دهید (مثلاً: «دارم از پای سیستم می‌رم، برای معاملات بالای ۰.۱ لات تلگرام پیام بده» یا «خرید ۰.۰۱ لات بگذار»).
+                  می‌توانید به زبان فارسی روان دستور دهید (مثلاً: «برای معاملات بالای ۰.۱ لات تلگرام پیام بده» یا «معامله فروش طلا باز کن»).
                 </p>
               </div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 self-start sm:self-auto shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>ذخیره‌سازی زنده در Supabase</span>
+              </span>
             </div>
 
             {/* Chat Messages Container */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 h-[280px] overflow-y-auto space-y-3 dir-rtl">
+            <div
+              ref={chatMessagesBoxRef}
+              onScroll={handleChatScroll}
+              className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-5 h-[460px] md:h-[520px] overflow-y-auto space-y-4 dir-rtl shadow-inner"
+            >
               {chatMessages.length > 0 ? (
                 chatMessages.map((msg) => (
                   <div
@@ -2222,32 +2885,41 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                     }`}
                   >
                     <div
-                      className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed font-sans ${
+                      className={`max-w-[88%] sm:max-w-[78%] p-3.5 rounded-2xl text-xs sm:text-sm leading-relaxed font-sans shadow-sm ${
                         msg.sender === 'user'
-                          ? 'bg-blue-600 text-white rounded-br-none shadow-sm'
-                          : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none shadow-sm'
+                          ? 'bg-blue-600 text-white rounded-tl-sm'
+                          : 'bg-white border border-slate-200 text-slate-800 rounded-tr-sm'
                       }`}
                     >
-                      <div className="flex items-center gap-1.5 mb-1 font-bold text-[10px] opacity-80">
+                      <div className="flex items-center justify-between gap-3 mb-1.5 font-bold text-[10px] sm:text-[11px] opacity-85 border-b border-white/20 pb-1">
                         {msg.sender === 'user' ? (
-                          <span>شما (کاربر)</span>
+                          <span className="text-blue-100">کاربر</span>
                         ) : (
-                          <span className="flex items-center gap-1 text-indigo-600">
-                            <Bot className="w-3 h-3" />
-                            <span>ایجنت هرمس</span>
+                          <span className="flex items-center gap-1 text-indigo-600 font-bold">
+                            <Bot className="w-3.5 h-3.5" />
+                            <span>ربات هوشمند هرمس</span>
                           </span>
                         )}
-                        <span className="font-mono text-[9px]">
-                          ({new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })})
-                        </span>
+                        <div className="flex items-center gap-1 font-mono text-[9px] opacity-80">
+                          <span>
+                            {new Date(msg.timestamp).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          {msg.sender === 'user' && (
+                            msg.status === 'sending' ? (
+                              <Loader2 className="w-3 h-3 text-blue-200 animate-spin" title="در حال ارسال به سرور..." />
+                            ) : (
+                              <CheckCheck className="w-3.5 h-3.5 text-blue-200" title="تحویل داده شد به ایجنت" />
+                            )
+                          )}
+                        </div>
                       </div>
                       <p className="whitespace-pre-wrap">{msg.text}</p>
                     </div>
                   </div>
                 ))
               ) : (
-                <div className="h-full flex items-center justify-center text-xs text-gray-400">
-                  هنوز پیامی رد و بدل نشده است. پیامی بنویسید...
+                <div className="h-full flex items-center justify-center text-xs text-slate-400 font-sans">
+                  در حال بارگذاری تاریخچه مکالمات از حافظه Supabase...
                 </div>
               )}
             </div>
@@ -2264,10 +2936,19 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
               <button
                 type="submit"
                 disabled={isSendingChat || !chatInput.trim()}
-                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-sm"
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-2 shadow-sm shrink-0 min-w-[110px]"
               >
-                <span>ارسال</span>
-                <Send className="w-3.5 h-3.5" />
+                {isSendingChat ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>در حال ارسال...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>ارسال</span>
+                    <Send className="w-3.5 h-3.5" />
+                  </>
+                )}
               </button>
             </form>
           </div>

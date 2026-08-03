@@ -37,8 +37,13 @@ app.get('/api/health', (req: Request, res: Response) => {
 
 // EA Heartbeat & Tick endpoint (MT5 Ambassador posts ticks and receives pending orders)
 app.post('/api/trading/tick', (req: Request, res: Response) => {
-  const result = tradingEngine.processHeartbeat(req.body);
-  res.json(result);
+  try {
+    const result = tradingEngine.processHeartbeat(req.body || {});
+    res.json({ status: 'ok', pendingOrders: result.pendingOrders || [], dataQuality: result.dataQuality });
+  } catch (err: any) {
+    console.error('[Tick Endpoint Error]:', err);
+    res.json({ status: 'ok', pendingOrders: [], error: err?.message || String(err) });
+  }
 });
 
 // Order Execution Result endpoint (MT5 Ambassador posts order fill status)
@@ -382,12 +387,6 @@ app.get('/api/trading/state', (req: Request, res: Response) => {
   res.json(tradingEngine.getState());
 });
 
-// Trading Agent API: MT5 Heartbeat & Tick
-app.post('/api/trading/tick', (req: Request, res: Response) => {
-  const result = tradingEngine.processHeartbeat(req.body || {});
-  res.json({ status: 'ok', pendingOrders: result.pendingOrders });
-});
-
 // Trading Agent API: Create New Order
 app.post('/api/trading/order', (req: Request, res: Response) => {
   const { symbol, type, lot, sl, tp, source } = req.body || {};
@@ -436,6 +435,35 @@ app.post('/api/trading/system-prompt', (req: Request, res: Response) => {
   res.json({ success: true, message: 'سیستم پرامپت ایجنت با موفقیت بروزرسانی شد.' });
 });
 
+// Trading Agent API: Dynamic Risk Engine Customization & Personalization
+app.get('/api/trading/risk-rules', (req: Request, res: Response) => {
+  res.json({ status: 'ok', rules: tradingEngine.getRiskRules() });
+});
+
+app.get('/api/trading/rules', (req: Request, res: Response) => {
+  res.json({ status: 'ok', rules: tradingEngine.getRiskRules() });
+});
+
+app.post('/api/trading/risk-rules', (req: Request, res: Response) => {
+  const { rules } = req.body || {};
+  if (!Array.isArray(rules)) {
+    res.status(400).json({ error: 'آرایه قوانین ریسک (rules) ارسالی نامعتبر است.' });
+    return;
+  }
+  const updated = tradingEngine.updateRiskRules(rules);
+  res.json({ status: 'ok', rules: updated });
+});
+
+app.post('/api/trading/rules', (req: Request, res: Response) => {
+  const { rules } = req.body || {};
+  if (!Array.isArray(rules)) {
+    res.status(400).json({ error: 'آرایه قوانین ریسک (rules) ارسالی نامعتبر است.' });
+    return;
+  }
+  const updated = tradingEngine.updateRiskRules(rules);
+  res.json({ status: 'ok', rules: updated });
+});
+
 app.post('/api/trading/autonomous-analyze', (req: Request, res: Response) => {
   const analysis = tradingEngine.runAutonomousAnalysis();
   res.json({ success: true, analysis });
@@ -476,6 +504,13 @@ app.get('/api/trading/memory', (req: Request, res: Response) => {
   });
 });
 
+app.get('/api/trading/chat-history', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    messages: tradingEngine.getChatMessages(),
+  });
+});
+
 app.post('/api/trading/memory', async (req: Request, res: Response) => {
   const { category, content } = req.body || {};
   if (!content) {
@@ -490,6 +525,93 @@ app.delete('/api/trading/memory/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   await tradingEngine.deleteMemoryNote(id);
   res.json({ success: true });
+});
+
+// Multi-Account Management API Endpoints
+app.get('/api/multi-accounts', (req: Request, res: Response) => {
+  try {
+    const accounts = tradingEngine.getAccountsList();
+    const activeAccountId = tradingEngine.getActiveAccountId();
+    res.json({ status: 'ok', activeAccountId, accounts });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+app.post('/api/multi-accounts', (req: Request, res: Response) => {
+  try {
+    const { accountId, accountNumber, broker, name, strategyType } = req.body || {};
+    if (!accountId) {
+      res.status(400).json({ error: 'شناسه حساب (accountId) الزامی است.' });
+      return;
+    }
+    const state = tradingEngine.getOrCreateAccountState(accountId, accountNumber, broker, name, strategyType);
+    res.json({ status: 'ok', account: state.config });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+app.post('/api/multi-accounts/select', (req: Request, res: Response) => {
+  try {
+    const { accountId } = req.body || {};
+    if (!accountId) {
+      res.status(400).json({ error: 'شناسه حساب (accountId) الزامی است.' });
+      return;
+    }
+    tradingEngine.switchActiveAccount(accountId);
+    res.json({ status: 'ok', activeAccountId: tradingEngine.getActiveAccountId() });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+app.get('/api/multi-accounts/:accountId/state', (req: Request, res: Response) => {
+  try {
+    const accState = tradingEngine.getAccountState(req.params.accountId);
+    res.json({ status: 'ok', state: accState });
+  } catch (err: any) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+// Trading Agent API: Knowledge Layer (Danesh Experimental Rules)
+app.get('/api/trading/knowledge', async (req: Request, res: Response) => {
+  const accountId = req.query.accountId as string | undefined;
+  const rules = await tradingEngine.getKnowledgeRules(accountId);
+  res.json({ success: true, knowledgeRules: rules });
+});
+
+app.post('/api/trading/knowledge', async (req: Request, res: Response) => {
+  const rule = req.body;
+  if (!rule || !rule.title || !rule.descriptionPersian) {
+    res.status(400).json({ error: 'اطلاعات قانون دانش کامل نیست.' });
+    return;
+  }
+  const success = await tradingEngine.saveKnowledgeRule(rule);
+  res.json({ success });
+});
+
+app.post('/api/trading/knowledge/toggle', async (req: Request, res: Response) => {
+  const { id, isEnabled } = req.body || {};
+  if (!id) {
+    res.status(400).json({ error: 'شناسه قانون دانش مشخص نیست.' });
+    return;
+  }
+  const success = await tradingEngine.toggleKnowledgeRule(id, !!isEnabled);
+  res.json({ success });
+});
+
+app.delete('/api/trading/knowledge/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const success = await tradingEngine.deleteKnowledgeRule(id);
+  res.json({ success });
+});
+
+app.post('/api/trading/knowledge/mine', async (req: Request, res: Response) => {
+  const { accountId } = req.body || {};
+  const rules = await tradingEngine.mineKnowledgeRules(accountId);
+  res.json({ success: true, knowledgeRules: rules });
 });
 
 // Trading Agent API: Interactive Chat

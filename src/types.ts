@@ -110,6 +110,7 @@ export interface TradeOrder {
   executionPrice?: number;
   error?: string;
   source: 'ai_agent' | 'user_manual' | 'telegram';
+  accountId?: string;
 }
 
 export interface TickData {
@@ -376,11 +377,100 @@ export interface EABridgeStatus {
 
 export interface RiskRule {
   id: string;
+  accountId?: string;
   name: string;
   description: string;
   isEnabled: boolean;
   value: number | string;
   unit: 'percentage' | 'usd' | 'lot' | 'boolean' | 'hours';
+}
+
+export interface TradeJournalEntry {
+  id: string;
+  accountId: string;
+  accountNumber?: number;
+  symbol: string;
+  timeframe: string;
+  timestamp: string;
+  
+  // Market Snapshot & Technical Context
+  ask: number;
+  bid: number;
+  spread: number;
+  candlesSummary?: {
+    lastClose: number;
+    trend: string;
+  };
+  indicatorsSnapshot?: Record<string, any>;
+  
+  // AI Decision & Reasoning
+  decision: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE_ALL';
+  confidence: number; // 0 to 100
+  persianAnalysis?: string;
+  englishAnalysis?: string;
+  confluenceReasons?: string[];
+  
+  // Order Parameters & Outcome
+  orderType?: 'BUY' | 'SELL' | 'CLOSE';
+  lot?: number;
+  entryPrice?: number;
+  sl?: number;
+  tp?: number;
+  exitPrice?: number;
+  exitTime?: string;
+  pnlUsd?: number;
+  pnlPoints?: number;
+  status: 'PROPOSED' | 'EXECUTED' | 'ACTIVE' | 'CLOSED' | 'CANCELLED' | 'FAILED';
+  executionError?: string;
+  
+  // Strategy & Risk
+  strategyName?: string;
+  riskScore?: number;
+  newsFilterPassed?: boolean;
+}
+
+export interface MultiAccountConfig {
+  accountId: string; // e.g. "MT5_1082391" or "account_default"
+  accountNumber: number;
+  broker: string;
+  name: string; // e.g. "طلا - موج سواری", "بیتکوین - سوئینگ"
+  strategyType: 'SURFING' | 'INTRADAY' | 'SWING' | 'SCALPING' | 'CUSTOM';
+  isEnabled: boolean;
+  assignedAgentName: string;
+  riskRules: RiskRule[];
+  trailingStopConfig: TrailingStopConfig;
+  createdAt: string;
+  lastActiveAt?: string;
+}
+
+export interface AgentKnowledgeRule {
+  id: string;
+  ruleCode: string;
+  title: string;
+  descriptionPersian: string;
+  sampleSize: number;
+  winRateImpact: number;
+  confidenceScore: number;
+  category: 'SPREAD' | 'CONFIDENCE' | 'NEWS' | 'TIMEFRAME' | 'DRAWDOWN' | 'GENERAL';
+  isEnabled: boolean;
+  createdAt: string;
+  updatedAt?: string;
+  accountId?: string;
+}
+
+export interface MultiAccountState {
+  config: MultiAccountConfig;
+  accountInfo: ExtendedAccountInfo;
+  positions: PositionInfo[];
+  pendingOrders: TradeOrder[];
+  orderHistory: TradeOrder[];
+  tradingLogs: AgentTradingLog[];
+  bridgeStatus: EABridgeStatus;
+  lastTick: TickData | null;
+  unifiedSnapshot?: UnifiedSnapshot | null;
+  journalEntries: TradeJournalEntry[];
+  memory: { id: string; category: string; content: string; createdAt: string; accountId?: string }[];
+  knowledgeRules?: AgentKnowledgeRule[];
 }
 
 export interface AgentTradingLog {
@@ -468,3 +558,72 @@ export interface ChatCompletionResponse {
     agent_id: string;
   };
 }
+
+export type CopilotMode = 'COPILOT_ANALYST' | 'AUTO_PILOT' | 'ADVISOR' | 'BACKTEST';
+export type TradingStyle = 'SCALPING' | 'DAY_TRADING' | 'SWING' | 'CUSTOM';
+
+export interface CopilotConfig {
+  accountId: string;
+  mode: CopilotMode;
+  style: TradingStyle;
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+  riskPercentPerTrade: number;
+  maxDailyDrawdownPercent: number;
+  maxTradesPerDay: number;
+  minRiskRewardRatio: number;
+  autoSlTpMode: 'AUTO_AI' | 'MANUAL_GUIDELINE';
+  preferredSymbols: string[];
+  expirationSeconds: number; // e.g. 30
+  autoExecuteOnHighConfidence: boolean;
+  minAutoExecuteConfidence: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TradeOpportunity {
+  id: string;
+  accountId: string;
+  symbol: string;
+  direction: 'BUY' | 'SELL' | 'WAIT';
+  confidence: number; // 0 - 100
+  winRate: number; // e.g. 82
+  entryZone: { min: number; max: number };
+  suggestedEntry: number;
+  stopLoss: number;
+  takeProfit: number;
+  lotSize: number;
+  riskRewardRatio: string; // e.g. "1:2.2"
+  estimatedProfitUsd: number;
+  estimatedRiskUsd: number;
+  style: TradingStyle;
+  timeframe: TimeframeType;
+  timestamp: string;
+  expiresAt: string; // ISO String
+  durationSeconds: number;
+  status: 'ACTIVE' | 'EXPIRED' | 'EXECUTED' | 'REJECTED';
+  reasons: {
+    trend: string;
+    structure: string;
+    indicators: string;
+    risk: string;
+  };
+  fullAnalysisText: string;
+  executedAt?: string;
+  executionPrice?: number;
+}
+
+export interface MarketScannerItem {
+  symbol: string;
+  nameFa: string;
+  price: number;
+  change24h: number;
+  trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  trendFa: string;
+  strengthScore: number; // 0 - 100
+  volatility: 'LOW' | 'MEDIUM' | 'HIGH';
+  volatilityFa: string;
+  bestOpportunitySignal?: 'BUY' | 'SELL' | 'WAIT';
+  confidence?: number;
+  lastUpdate: string;
+}
+
