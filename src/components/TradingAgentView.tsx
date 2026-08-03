@@ -256,29 +256,29 @@ void SendUnifiedSnapshotAndPoll()
 void ParseAndDispatchActions(string jsonStr)
 {
    // A. Process Pending Orders (New Trade Entries / Close All)
-   if(StringFind(jsonStr, "\"pendingOrders\":") >= 0)
+   if(StringFind(jsonStr, "\\\"pendingOrders\\\":") >= 0)
    {
-      int pos = StringFind(jsonStr, "\"id\":\"", 0);
+      int pos = StringFind(jsonStr, "\\\"id\\\":\\\"", 0);
       while(pos >= 0)
       {
          int startId = pos + 6;
-         int endId = StringFind(jsonStr, "\"", startId);
+         int endId = StringFind(jsonStr, "\\\"", startId);
          string orderId = StringSubstr(jsonStr, startId, endId - startId);
 
          if(!IsOrderAlreadyExecuted(orderId))
          {
-            int typePos = StringFind(jsonStr, "\"type\":\"", endId);
+            int typePos = StringFind(jsonStr, "\\\"type\\\":\\\"", endId);
             int startType = typePos + 8;
-            int endType = StringFind(jsonStr, "\"", startType);
+            int endType = StringFind(jsonStr, "\\\"", startType);
             string orderType = StringSubstr(jsonStr, startType, endType - startType);
 
             // Parse Symbol
             string orderSymbol = _Symbol;
-            int symPos = StringFind(jsonStr, "\"symbol\":\"", endType);
+            int symPos = StringFind(jsonStr, "\\\"symbol\\\":\\\"", endType);
             if(symPos > 0)
             {
                int startSym = symPos + 10;
-               int endSym = StringFind(jsonStr, "\"", startSym);
+               int endSym = StringFind(jsonStr, "\\\"", startSym);
                if(endSym > startSym)
                {
                   orderSymbol = StringSubstr(jsonStr, startSym, endSym - startSym);
@@ -287,7 +287,7 @@ void ParseAndDispatchActions(string jsonStr)
 
             // Parse Lot (check both "lots": and "lot":)
             double lot = 0.01;
-            int lotPos = StringFind(jsonStr, "\"lots\":", endType);
+            int lotPos = StringFind(jsonStr, "\\\"lots\\\":", endType);
             if(lotPos > 0)
             {
                int endLot = StringFind(jsonStr, ",", lotPos);
@@ -296,7 +296,7 @@ void ParseAndDispatchActions(string jsonStr)
             }
             else
             {
-               lotPos = StringFind(jsonStr, "\"lot\":", endType);
+               lotPos = StringFind(jsonStr, "\\\"lot\\\":", endType);
                if(lotPos > 0)
                {
                   int endLot = StringFind(jsonStr, ",", lotPos);
@@ -307,7 +307,7 @@ void ParseAndDispatchActions(string jsonStr)
 
             // Parse Stop Loss (check both "stopLoss": and "sl":)
             double sl = 0.0;
-            int slPos = StringFind(jsonStr, "\"stopLoss\":", endType);
+            int slPos = StringFind(jsonStr, "\\\"stopLoss\\\":", endType);
             if(slPos > 0)
             {
                int endSl = StringFind(jsonStr, ",", slPos);
@@ -316,7 +316,7 @@ void ParseAndDispatchActions(string jsonStr)
             }
             else
             {
-               slPos = StringFind(jsonStr, "\"sl\":", endType);
+               slPos = StringFind(jsonStr, "\\\"sl\\\":", endType);
                if(slPos > 0)
                {
                   int endSl = StringFind(jsonStr, ",", slPos);
@@ -327,7 +327,7 @@ void ParseAndDispatchActions(string jsonStr)
 
             // Parse Take Profit (check both "takeProfit": and "tp":)
             double tp = 0.0;
-            int tpPos = StringFind(jsonStr, "\"takeProfit\":", endType);
+            int tpPos = StringFind(jsonStr, "\\\"takeProfit\\\":", endType);
             if(tpPos > 0)
             {
                int endTp = StringFind(jsonStr, ",", tpPos);
@@ -336,7 +336,7 @@ void ParseAndDispatchActions(string jsonStr)
             }
             else
             {
-               tpPos = StringFind(jsonStr, "\"tp\":", endType);
+               tpPos = StringFind(jsonStr, "\\\"tp\\\":", endType);
                if(tpPos > 0)
                {
                   int endTp = StringFind(jsonStr, ",", tpPos);
@@ -347,14 +347,14 @@ void ParseAndDispatchActions(string jsonStr)
 
             ExecuteSingleOrder(orderId, orderType, lot, sl, tp, orderSymbol);
          }
-         pos = StringFind(jsonStr, "\"id\":\"", pos + 10);
+         pos = StringFind(jsonStr, "\\\"id\\\":\\\"", pos + 10);
       }
    }
 
    // B. Process Position Modifications (Breakeven & Dynamic Trailing Stops)
-   if(StringFind(jsonStr, "\"modifications\":") >= 0)
+   if(StringFind(jsonStr, "\\\"modifications\\\":") >= 0)
    {
-      int modPos = StringFind(jsonStr, "\"ticket\":", 0);
+      int modPos = StringFind(jsonStr, "\\\"ticket\\\":", 0);
       while(modPos >= 0)
       {
          int startTicket = modPos + 9;
@@ -362,7 +362,7 @@ void ParseAndDispatchActions(string jsonStr)
          ulong ticket = (ulong)StringToInteger(StringSubstr(jsonStr, startTicket, endTicket - startTicket));
 
          double newSL = 0.0;
-         int slPos = StringFind(jsonStr, "\"newSL\":", endTicket);
+         int slPos = StringFind(jsonStr, "\\\"newSL\\\":", endTicket);
          if(slPos > 0)
          {
             int endSl = StringFind(jsonStr, ",", slPos);
@@ -371,7 +371,7 @@ void ParseAndDispatchActions(string jsonStr)
          }
 
          double newTP = 0.0;
-         int tpPos = StringFind(jsonStr, "\"newTP\":", endTicket);
+         int tpPos = StringFind(jsonStr, "\\\"newTP\\\":", endTicket);
          if(tpPos > 0)
          {
             int endTp = StringFind(jsonStr, ",", tpPos);
@@ -403,7 +403,7 @@ void ParseAndDispatchActions(string jsonStr)
             }
          }
 
-         modPos = StringFind(jsonStr, "\"ticket\":", modPos + 10);
+         modPos = StringFind(jsonStr, "\\\"ticket\\\":", modPos + 10);
       }
    }
 }
@@ -552,7 +552,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
    }
 
    string jsonPayload = StringFormat(
-      "{\"orderId\":\"%s\",\"status\":\"%s\",\"executionPrice\":%.5f,\"error\":\"%s\"}",
+      "{\\\"orderId\\\":\\\"%s\\\",\\\"status\\\":\\\"%s\\\",\\\"executionPrice\\\":%.5f,\\\"error\\\":\\\"%s\\\"}",
       orderId, status, price, errorMsg
    );
 
@@ -562,7 +562,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
    char resultData[];
    string resultHeaders;
-   string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + InpSecretToken + "\r\n";
+   string headers = "Content-Type: application/json\\r\\nAuthorization: Bearer " + InpSecretToken + "\\r\\n";
 
    WebRequest("POST", resultUrl, headers, 3000, postData, resultData, resultHeaders);
 }
