@@ -1263,24 +1263,25 @@ class TradingEngine {
     ];
 
     const allPassed = checklist.every((c) => c.passed);
-    const decision = allPassed ? 'BUY' : 'NO_TRADE';
-    const targetTp = Number((ask + 3.0).toFixed(2));
-    const targetSl = Number((ask - 0.5).toFixed(2));
+    const signal = this.getTradingSignal();
+    const decision: 'BUY' | 'SELL' | 'NO_TRADE' = allPassed ? (signal.action === 'SELL' ? 'SELL' : 'BUY') : 'NO_TRADE';
+    const targetTp = decision === 'BUY' ? Number((ask + 3.0).toFixed(2)) : Number((bid - 3.0).toFixed(2));
+    const targetSl = decision === 'BUY' ? Number((ask - 0.5).toFixed(2)) : Number((bid + 0.5).toFixed(2));
 
     let orderDispatched = false;
     let reasoning = '';
 
-    if (decision === 'BUY') {
+    if (decision === 'BUY' || decision === 'SELL') {
       const res = this.createOrder({
         symbol,
-        type: 'BUY',
+        type: decision,
         lot: 0.01,
         sl: targetSl,
         tp: targetTp,
         source: 'ai_agent',
       });
       orderDispatched = res.success;
-      reasoning = `تمام ۷ شرط چک‌لیست فرآیند ۸ مرحله‌ای تایید شد. معامله خرید با حجم ۰.۰۱ لات روی قیمت ${ask} (TP: ${targetTp}, SL: ${targetSl}) صادر و به متاتریدر ارسال گردید.`;
+      reasoning = `تمام ۷ شرط چک‌لیست فرآیند ۸ مرحله‌ای تایید شد. معامله ${decision === 'BUY' ? 'خرید' : 'فروش'} با حجم ۰.۰۱ لات روی قیمت ${decision === 'BUY' ? ask : bid} (TP: ${targetTp}, SL: ${targetSl}) صادر و به متاتریدر ارسال گردید.`;
     } else {
       reasoning = `بر اساس ارزیابی چک‌لیست ۸ مرحله‌ای، به دلیل سقف معاملات یا عدم تایید شرایط، تصمیم به عدم معامله (NO TRADE) اتخاذ شد.`;
     }
@@ -1600,7 +1601,7 @@ ${compactChatHistory.join('\n')}
                 const currentSignal = this.getTradingSignal();
                 const initialType = currentSignal.action === 'SELL' ? 'SELL' : 'BUY';
                 
-                this.createOrder({
+                const autoRes = this.createOrder({
                   symbol: targetSymbol,
                   type: initialType,
                   lot: parsed.lot || 0.01,
@@ -1609,11 +1610,14 @@ ${compactChatHistory.join('\n')}
                   source: 'ai_agent',
                   accountId: targetAccountId,
                 });
+                if (!autoRes.success) {
+                  reply += `\n\n⚠️ [هشدار موتور ریسک / عدم ثبت معامله اولیه]: ${autoRes.error}`;
+                }
               } else if (parsed.action === 'DISABLE_AUTONOMOUS') {
                 this.autonomousTrading.enabled = false;
               } else if (parsed.action === 'TRADE_BUY' || parsed.action === 'TRADE_SELL') {
                 const type = parsed.action === 'TRADE_BUY' ? 'BUY' : 'SELL';
-                this.createOrder({
+                const orderRes = this.createOrder({
                   symbol: targetSymbol,
                   type,
                   lot: parsed.lot || 0.01,
@@ -1622,14 +1626,20 @@ ${compactChatHistory.join('\n')}
                   source: 'ai_agent',
                   accountId: targetAccountId,
                 });
+                if (!orderRes.success) {
+                  reply += `\n\n⚠️ [خطای موتور ریسک / عدم امکان ثبت سفارش]: ${orderRes.error}`;
+                }
               } else if (parsed.action === 'CLOSE_SYMBOL' || parsed.action === 'CLOSE_ALL') {
-                this.createOrder({
+                const closeRes = this.createOrder({
                   symbol: targetSymbol,
                   type: 'CLOSE_ALL',
                   lot: 0.01,
                   source: 'user_manual',
                   accountId: targetAccountId,
                 });
+                if (!closeRes.success) {
+                  reply += `\n\n⚠️ [خطای موتور ریسک / عدم ثبت دستور بستن]: ${closeRes.error}`;
+                }
               }
 
               if (parsed.memoryNote) {
@@ -2087,6 +2097,15 @@ ${compactChatHistory.join('\n')}
 
     // Phase 3 Risk Engine Pre-Execution Rule Checks
     if (orderInput.type === 'BUY' || orderInput.type === 'SELL') {
+      // Auto-fill safe fallback Stop Loss if missing so mandatory SL rule passes cleanly
+      if (!orderInput.sl || orderInput.sl <= 0) {
+        const tick = targetAcc.lastTick || this.state.lastTick;
+        if (tick && tick.ask > 0) {
+          const refPrice = orderInput.type === 'BUY' ? tick.ask : tick.bid;
+          orderInput.sl = Number((orderInput.type === 'BUY' ? refPrice * 0.99 : refPrice * 1.01).toFixed(2));
+        }
+      }
+
       const assessment = this.getRiskAssessment(orderInput);
       if (!assessment.isAllowed) {
         const primaryFailure = assessment.failedRules[0];
@@ -2617,6 +2636,8 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    string symbol = (orderSymbol != "" && orderSymbol != NULL) ? orderSymbol : _Symbol;
    if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
 
+   SymbolSelect(symbol, true);
+
    bool success = false;
    double price = 0;
    string errorMsg = "";
@@ -2633,25 +2654,44 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(lot > maxLot) lot = maxLot;
    }
 
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   if(digits <= 0) digits = 2;
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   if(point <= 0) point = 0.0001;
+
+   // 2. Configure Broker Type Filling & Slippage
+   trade.SetDeviationInPoints(InpSlippage);
+   uint filling = (uint)SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0) trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else if((filling & SYMBOL_FILLING_IOC) != 0) trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else trade.SetTypeFilling(ORDER_FILLING_RETURN);
+
    if(typeStr == "BUY")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_ASK);
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      price = NormalizeDouble(price, digits);
 
       // Guard against invalid SL for BUY (SL must be strictly below Ask price)
       if(sl > 0.0 && sl >= price)
       {
-         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-         if(point <= 0) point = 0.0001;
          sl = price - (100 * point);
+      }
+
+      // Guard against invalid TP for BUY (TP must be strictly above Ask price)
+      if(tp > 0.0 && tp <= price)
+      {
+         tp = price + (100 * point);
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-         sl = NormalizeDouble(price * 0.99, digits > 0 ? digits : 2);
+         sl = price * 0.99;
       }
+
+      if(sl > 0.0) sl = NormalizeDouble(sl, digits);
+      if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
       success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
@@ -2659,21 +2699,28 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    {
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      price = NormalizeDouble(price, digits);
 
       // Guard against invalid SL for SELL (SL must be strictly above Bid price)
       if(sl > 0.0 && sl <= price)
       {
-         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-         if(point <= 0) point = 0.0001;
          sl = price + (100 * point);
+      }
+
+      // Guard against invalid TP for SELL (TP must be strictly below Bid price)
+      if(tp > 0.0 && tp >= price)
+      {
+         tp = price - (100 * point);
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-         sl = NormalizeDouble(price * 1.01, digits > 0 ? digits : 2);
+         sl = price * 1.01;
       }
+
+      if(sl > 0.0) sl = NormalizeDouble(sl, digits);
+      if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
       success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
@@ -2712,7 +2759,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
 
    if(!success && typeStr != "CLOSE_ALL")
    {
-      errorMsg = StringFormat("CTrade Error %d: %s", trade.ResultRetcode(), trade.ResultComment());
+      errorMsg = StringFormat("CTrade Error %d (%s): %s", trade.ResultRetcode(), trade.ResultRetcodeDescription(), trade.ResultComment());
       PrintFormat("[Hermes Order Failed] ID: %s | %s", orderId, errorMsg);
    }
    else
@@ -2755,9 +2802,15 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       }
    }
 
+   // Sanitize error string for clean JSON encoding
+   string cleanError = errorMsg;
+   StringReplace(cleanError, "\"", "'");
+   StringReplace(cleanError, "\r", " ");
+   StringReplace(cleanError, "\n", " ");
+
    string jsonPayload = StringFormat(
       "{\\\"orderId\\\":\\\"%s\\\",\\\"status\\\":\\\"%s\\\",\\\"executionPrice\\\":%.5f,\\\"error\\\":\\\"%s\\\"}",
-      orderId, status, price, errorMsg
+      orderId, status, price, cleanError
    );
 
    char postData[];

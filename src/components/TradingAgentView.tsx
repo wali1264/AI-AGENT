@@ -414,6 +414,8 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    string symbol = (orderSymbol != "" && orderSymbol != NULL) ? orderSymbol : _Symbol;
    if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
 
+   SymbolSelect(symbol, true);
+
    bool success = false;
    double price = 0;
    string errorMsg = "";
@@ -430,25 +432,44 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(lot > maxLot) lot = maxLot;
    }
 
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   if(digits <= 0) digits = 2;
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   if(point <= 0) point = 0.0001;
+
+   // 2. Configure Broker Type Filling & Slippage
+   trade.SetDeviationInPoints(InpSlippage);
+   uint filling = (uint)SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0) trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else if((filling & SYMBOL_FILLING_IOC) != 0) trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else trade.SetTypeFilling(ORDER_FILLING_RETURN);
+
    if(typeStr == "BUY")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_ASK);
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      price = NormalizeDouble(price, digits);
 
       // Guard against invalid SL for BUY (SL must be strictly below Ask price)
       if(sl > 0.0 && sl >= price)
       {
-         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-         if(point <= 0) point = 0.0001;
          sl = price - (100 * point);
+      }
+
+      // Guard against invalid TP for BUY (TP must be strictly above Ask price)
+      if(tp > 0.0 && tp <= price)
+      {
+         tp = price + (100 * point);
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-         sl = NormalizeDouble(price * 0.99, digits > 0 ? digits : 2);
+         sl = price * 0.99;
       }
+
+      if(sl > 0.0) sl = NormalizeDouble(sl, digits);
+      if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
       success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
@@ -456,21 +477,28 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    {
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      price = NormalizeDouble(price, digits);
 
       // Guard against invalid SL for SELL (SL must be strictly above Bid price)
       if(sl > 0.0 && sl <= price)
       {
-         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-         if(point <= 0) point = 0.0001;
          sl = price + (100 * point);
+      }
+
+      // Guard against invalid TP for SELL (TP must be strictly below Bid price)
+      if(tp > 0.0 && tp >= price)
+      {
+         tp = price - (100 * point);
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-         sl = NormalizeDouble(price * 1.01, digits > 0 ? digits : 2);
+         sl = price * 1.01;
       }
+
+      if(sl > 0.0) sl = NormalizeDouble(sl, digits);
+      if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
       success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
@@ -509,7 +537,7 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
 
    if(!success && typeStr != "CLOSE_ALL")
    {
-      errorMsg = StringFormat("CTrade Error %d: %s", trade.ResultRetcode(), trade.ResultComment());
+      errorMsg = StringFormat("CTrade Error %d (%s): %s", trade.ResultRetcode(), trade.ResultRetcodeDescription(), trade.ResultComment());
       PrintFormat("[Hermes Order Failed] ID: %s | %s", orderId, errorMsg);
    }
    else
@@ -551,9 +579,15 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       }
    }
 
+   // Sanitize error string for clean JSON encoding
+   string cleanError = errorMsg;
+   StringReplace(cleanError, "\"", "'");
+   StringReplace(cleanError, "\r", " ");
+   StringReplace(cleanError, "\n", " ");
+
    string jsonPayload = StringFormat(
       "{\\\"orderId\\\":\\\"%s\\\",\\\"status\\\":\\\"%s\\\",\\\"executionPrice\\\":%.5f,\\\"error\\\":\\\"%s\\\"}",
-      orderId, status, price, errorMsg
+      orderId, status, price, cleanError
    );
 
    char postData[];
@@ -2138,8 +2172,11 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                               ) : (
                                 <div className="flex flex-col text-right">
                                   <span className="text-rose-600 font-bold font-sans">❌ خطا در اجرا</span>
-                                  <span className="text-[10px] text-rose-500 font-sans leading-tight mt-0.5 max-w-[200px] truncate" title={ord.error || 'خطای نا مشخص یا عدم تایید متاتریدر'}>
-                                    {ord.error || 'پاسخی در مهلت مقرر از متاتریدر دریافت نشد'}
+                                  <span
+                                    className="text-[10px] text-rose-600 bg-rose-50 border border-rose-100 rounded p-1 font-sans leading-tight mt-1 max-w-[280px] break-words whitespace-pre-wrap cursor-help"
+                                    title={ord.error || 'خطای نا مشخص یا عدم تایید متاتریدر ۵'}
+                                  >
+                                    {ord.error || 'پاسخی در مهلت ۴۵ ثانیه از سفیر متاتریدر ۵ دریافت نشد'}
                                   </span>
                                 </div>
                               )}
