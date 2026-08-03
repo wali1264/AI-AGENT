@@ -2071,7 +2071,7 @@ ${compactChatHistory.join('\n')}
   }
 
   public createOrder(orderInput: {
-    symbol: string;
+    symbol?: string;
     type: 'BUY' | 'SELL' | 'CLOSE' | 'CLOSE_ALL';
     lot: number;
     sl?: number;
@@ -2083,6 +2083,12 @@ ${compactChatHistory.join('\n')}
     const clientOrderId = orderInput.clientOrderId || `cid_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const targetAccountId = orderInput.accountId || this.activeAccountId;
     const targetAcc = this.getOrCreateAccountState(targetAccountId);
+
+    // Auto-bind single active chart symbol for this account if missing or empty
+    const effectiveSymbol = (orderInput.symbol && orderInput.symbol.trim() !== '')
+      ? orderInput.symbol.trim()
+      : (targetAcc.config.activeSymbol || targetAcc.lastTick?.symbol || this.state.lastTick?.symbol || 'XAUUSD.m');
+    orderInput.symbol = effectiveSymbol;
 
     // Check Idempotency: Prevent duplicate execution if this order was already processed
     if (this.processedClientOrderIds.has(clientOrderId)) {
@@ -2461,7 +2467,7 @@ void SendUnifiedSnapshotAndPoll()
    string resultHeaders;
    string headers = "Content-Type: application/json\\r\\nAuthorization: Bearer " + InpSecretToken + "\\r\\n";
 
-   int res = WebRequest("POST", InpServerUrl, headers, 3000, postData, resultData, resultHeaders);
+   int res = WebRequest("POST", InpServerUrl, headers, 10000, postData, resultData, resultHeaders);
 
    if(res == 200)
    {
@@ -2470,7 +2476,7 @@ void SendUnifiedSnapshotAndPoll()
    }
    else
    {
-      PrintFormat("[Hermes Bridge ERROR] WebRequest HTTP status: %d | Last Error: %d", res, GetLastError());
+      PrintFormat("[Hermes Bridge ERROR] WebRequest HTTP status: %d | Last Error: %d | Ensure MT5 -> Tools -> Options -> Expert Advisors -> Allow WebRequest includes '%s'", res, GetLastError(), InpServerUrl);
    }
 }
 
@@ -2693,7 +2699,20 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(sl > 0.0) sl = NormalizeDouble(sl, digits);
       if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
-      success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
+      // Primary market execution attempt
+      success = trade.Buy(lot, symbol, 0, sl, tp, "Hermes Order " + orderId);
+      if(!success)
+      {
+         // Retry 1: Explicit price with IOC filling
+         trade.SetTypeFilling(ORDER_FILLING_IOC);
+         success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
+      }
+      if(!success)
+      {
+         // Retry 2: RETURN filling mode
+         trade.SetTypeFilling(ORDER_FILLING_RETURN);
+         success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
+      }
    }
    else if(typeStr == "SELL")
    {
@@ -2722,7 +2741,20 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(sl > 0.0) sl = NormalizeDouble(sl, digits);
       if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
-      success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
+      // Primary market execution attempt
+      success = trade.Sell(lot, symbol, 0, sl, tp, "Hermes Order " + orderId);
+      if(!success)
+      {
+         // Retry 1: Explicit price with IOC filling
+         trade.SetTypeFilling(ORDER_FILLING_IOC);
+         success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
+      }
+      if(!success)
+      {
+         // Retry 2: RETURN filling mode
+         trade.SetTypeFilling(ORDER_FILLING_RETURN);
+         success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
+      }
    }
    else if(typeStr == "CLOSE_ALL")
    {
@@ -2821,7 +2853,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
    string resultHeaders;
    string headers = "Content-Type: application/json\\r\\nAuthorization: Bearer " + InpSecretToken + "\\r\\n";
 
-   WebRequest("POST", resultUrl, headers, 3000, postData, resultData, resultHeaders);
+   WebRequest("POST", resultUrl, headers, 10000, postData, resultData, resultHeaders);
 }
 `;
   }

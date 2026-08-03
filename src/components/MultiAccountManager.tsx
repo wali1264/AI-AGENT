@@ -21,6 +21,7 @@ export interface MultiAccountConfig {
   accountNumber: number;
   broker: string;
   name: string;
+  activeSymbol?: string;
   strategyType: 'SURFING' | 'INTRADAY' | 'SWING' | 'SCALPING' | 'CUSTOM';
   isEnabled: boolean;
   assignedAgentName: string;

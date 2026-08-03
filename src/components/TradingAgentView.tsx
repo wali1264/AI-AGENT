@@ -1211,13 +1211,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
     setOrderError(null);
     setOrderSuccess(null);
 
-    const activeSym = isCustomSymbol ? customSymbolInput.trim() : symbol;
-    if (!activeSym) {
-      setOrderError('لطفاً نماد معاملاتی را انتخاب یا وارد نمایید.');
-      return;
-    }
-
     const targetAccId = orderAccountId || activeAccountId;
+    const targetAcc = multiAccountsList.find((a: any) => a.accountId === targetAccId);
+    const activeSym = targetAcc?.activeSymbol || targetAcc?.symbol || targetAcc?.lastTick?.symbol || symbol || 'XAUUSD.m';
 
     try {
       const res = await fetch('/api/trading/order', {
@@ -1239,7 +1235,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
       if (!res.ok) {
         setOrderError(data.error || 'خطا در ثبت سفارش');
       } else {
-        setOrderSuccess(`سفارش ${orderType} روی نماد ${activeSym} (حساب ${targetAccId}) با موفقیت در صف ارسال به MT5 قرار گرفت.`);
+        setOrderSuccess(`سفارش ${orderType} روی نماد اختصاصی ${activeSym} (حساب ${targetAccId}) با موفقیت در صف ارسال به MT5 قرار گرفت.`);
         fetchTradingState();
       }
     } catch (err: unknown) {
@@ -1943,67 +1939,39 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                 </select>
               </div>
 
-              {/* Symbol Selection Dropdown ("منوی کشویی / کشوری انتخاب نماد") & Order Type */}
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-gray-800 flex items-center gap-1">
-                  <Compass className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>منوی کشویی انتخاب نماد (Symbol Country Menu - دریافت زنده از MT5)</span>
-                </label>
+              {/* Single Account Active Symbol Display & Order Type Selection */}
+              <div className="space-y-3">
+                {(() => {
+                  const selectedAccId = orderAccountId || activeAccountId;
+                  const targetAcc = multiAccountsList.find((a: any) => a.accountId === selectedAccId);
+                  const dedicatedSymbol = targetAcc?.activeSymbol || targetAcc?.lastTick?.symbol || targetAcc?.symbol || symbol || 'XAUUSD.m';
+                  return (
+                    <div className="p-3 bg-emerald-50/90 border border-emerald-200 rounded-lg flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Compass className="w-4 h-4 text-emerald-600 animate-pulse" />
+                        <div>
+                          <span className="text-xs font-bold text-emerald-900 block">نماد اختصاصی چارت این حساب:</span>
+                          <span className="text-sm font-mono font-black text-emerald-700">{dedicatedSymbol}</span>
+                        </div>
+                      </div>
+                      <span className="text-[11px] px-2.5 py-1 bg-emerald-100 text-emerald-800 font-bold rounded-md border border-emerald-300">
+                        تک‌نماد خوارکار متصل به MT5
+                      </span>
+                    </div>
+                  );
+                })()}
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <select
-                      value={isCustomSymbol ? 'CUSTOM' : symbol}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === 'CUSTOM') {
-                          setIsCustomSymbol(true);
-                        } else {
-                          setIsCustomSymbol(false);
-                          setSymbol(val);
-                        }
-                      }}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono font-bold text-gray-900 bg-white focus:outline-none focus:border-emerald-500 shadow-sm"
-                    >
-                      {liveSymbolsList.length > 0 ? (
-                        <optgroup label="📊 نمادهای دریافتی زنده از متاتریدر ۵ (Live MQL5 Ticks)">
-                          {liveSymbolsList.map((item) => (
-                            <option key={item.symbol} value={item.symbol}>
-                              {item.symbol} ({item.source}){item.lastPrice ? ` - $${item.lastPrice.toFixed(2)}` : ''}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : (
-                        <option value="" disabled>🔴 در انتظار دریافت نماد زنده از MQL5 (تیکی دریافت نشده)</option>
-                      )}
-                      <optgroup label="✏️ انتخاب یا تایپ دستی">
-                        <option value="CUSTOM">تایپ دستی نماد دیگر (Custom Symbol)...</option>
-                      </optgroup>
-                    </select>
-
-                    {isCustomSymbol && (
-                      <input
-                        type="text"
-                        placeholder="نام نماد مثلاً: BTCUSD"
-                        value={customSymbolInput}
-                        onChange={(e) => setCustomSymbolInput(e.target.value.toUpperCase())}
-                        className="w-full mt-2 px-3 py-1.5 border border-amber-300 rounded-lg text-xs font-mono text-gray-900 bg-amber-50 focus:outline-none focus:border-amber-500"
-                        required
-                      />
-                    )}
-                  </div>
-
-                  <div>
-                    <select
-                      value={orderType}
-                      onChange={(e) => setOrderType(e.target.value as any)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-900 bg-white focus:outline-none focus:border-blue-500 shadow-sm"
-                    >
-                      <option value="BUY">🟢 خرید مستقیم (BUY)</option>
-                      <option value="SELL">🔴 فروش مستقیم (SELL)</option>
-                      <option value="CLOSE_ALL">⚠️ بستن همه پوزیشن‌ها (CLOSE ALL)</option>
-                    </select>
-                  </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-800 mb-1">نوع سفارش (Order Action)</label>
+                  <select
+                    value={orderType}
+                    onChange={(e) => setOrderType(e.target.value as any)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-900 bg-white focus:outline-none focus:border-blue-500 shadow-sm"
+                  >
+                    <option value="BUY">🟢 خرید مستقیم (BUY)</option>
+                    <option value="SELL">🔴 فروش مستقیم (SELL)</option>
+                    <option value="CLOSE_ALL">⚠️ بستن همه پوزیشن‌ها (CLOSE ALL)</option>
+                  </select>
                 </div>
               </div>
 

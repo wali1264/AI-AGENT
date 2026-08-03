@@ -438,12 +438,12 @@ async function startServer() {
 
   // Trading Agent API: Create New Order
   app.post('/api/trading/order', (req: Request, res: Response) => {
-    const { symbol, type, lot, sl, tp, source } = req.body || {};
-    if (!symbol || !type || !lot) {
-      res.status(400).json({ error: 'اطلاعات سفارش کامل نیست (نماد، نوع معامله و حجم الزامی است).' });
+    const { symbol, type, lot, sl, tp, source, accountId, clientOrderId } = req.body || {};
+    if (!type || !lot) {
+      res.status(400).json({ error: 'اطلاعات سفارش کامل نیست (نوع معامله و حجم الزامی است).' });
       return;
     }
-    const result = tradingEngine.createOrder({ symbol, type, lot, sl, tp, source: source || 'user_manual' });
+    const result = tradingEngine.createOrder({ symbol, type, lot, sl, tp, source: source || 'user_manual', accountId, clientOrderId });
     if (!result.success) {
       res.status(400).json({ error: result.error });
       return;

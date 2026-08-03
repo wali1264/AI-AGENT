@@ -437,6 +437,7 @@ export interface MultiAccountConfig {
   accountNumber: number;
   broker: string;
   name: string; // e.g. "طلا - موج سواری", "بیتکوین - سوئینگ"
+  activeSymbol?: string; // e.g. "XAUUSD.m", "BTCUSD"
   strategyType: 'SURFING' | 'INTRADAY' | 'SWING' | 'SCALPING' | 'CUSTOM';
   isEnabled: boolean;
   assignedAgentName: string;
