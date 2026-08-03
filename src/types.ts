@@ -161,6 +161,7 @@ export interface PositionInfo {
   sl: number;
   tp: number;
   currentProfit: number;
+  profit?: number;
   swap: number;
   commission: number;
   magicNumber: number;
