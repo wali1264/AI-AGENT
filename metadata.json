@@ -1,6 +1,8 @@
 {
-  "name": "Hermes Cloud Router & Control Panel",
-  "description": "Enterprise Cloud Gateway & Intelligent AI Router Control Panel for Hermes Agent with Multi-Key Pool, Auto Failover & OpenAI API Compatibility",
+  "name": "okokokok Hermes Cloud Router \u0026 Control Panel",
+  "description": "Enterprise Cloud Gateway \u0026 Intelligent AI Router Control Panel for Hermes Agent with Multi-Key Pool, Auto Failover \u0026 OpenAI API Compatibility",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
