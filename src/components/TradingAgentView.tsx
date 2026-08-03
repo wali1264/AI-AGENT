@@ -878,18 +878,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
                 status: existing?.status === 'sending' ? 'sending' : 'delivered',
               });
             });
-            const merged = Array.from(map.values()).sort(
+            return Array.from(map.values()).sort(
               (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
             );
-
-            // Avoid triggering state update if messages content has not changed
-            if (
-              prev.length === merged.length &&
-              prev.every((m, idx) => m.id === merged[idx].id && m.text === merged[idx].text && m.status === merged[idx].status)
-            ) {
-              return prev;
-            }
-            return merged;
           });
         }
       }

@@ -779,11 +779,11 @@ class TradingEngine {
   };
 
   private agentMemory: { id: string; category: string; content: string; createdAt: string; accountId?: string }[] = [];
-  private chatMessages: { id: string; sender: 'user' | 'agent'; text: string; timestamp: string; accountId?: string }[] = [
+  private chatMessages: { id: string; sender: 'user' | 'agent'; text: string; timestamp: string }[] = [
     {
-      id: 'chat_welcome',
+      id: 'msg_welcome',
       sender: 'agent',
-      text: 'سلام! من ایجنت معامله‌گر هوشمند هرمس هستم. تمامی دستورات تحلیلی، مدیریت ریسک و استراتژی‌های معاملاتی متاتریدر ۵ را در حافظه بلندمدت ثبت و اجرا می‌کنم. چطور می‌توانم کمکتان کنم؟',
+      text: 'سلام! من ایجنت معامله‌گر هرمس هستم. دستورات و قوانین معامله خودتان را بدهید تا در حافظه بلندمدت Supabase ذخیره کنم و بر اساس آن عمل کنم.',
       timestamp: new Date().toISOString(),
     },
   ];
@@ -2010,50 +2010,6 @@ ${compactChatHistory.join('\n')}
       };
     }
 
-    // Virtual Risk Engine Guard: Monitor open positions against target dollar loss or profit
-    if (positions && positions.length > 0) {
-      for (const pos of positions) {
-        const profit = pos.profit ?? pos.currentProfit ?? 0;
-        const ticket = pos.ticket;
-        const targetTPUSD = this.autonomousTrading.targetProfitUSD || 1.0;
-        const targetSLUSD = this.autonomousTrading.stopLossUSD || 3.0;
-
-        if (profit >= targetTPUSD && ticket > 0) {
-          const lastTrigger = (this as any)[`_triggered_tp_${ticket}`];
-          if (!lastTrigger || Date.now() - lastTrigger > 10000) {
-            (this as any)[`_triggered_tp_${ticket}`] = Date.now();
-            this.logTradingActivity(
-              'ai_analysis',
-              `🎯 [محافظ هوشمند هرمس]: پوزیشن تیکت #${ticket} به حد سود هدف ($${profit.toFixed(2)} >= $${targetTPUSD.toFixed(2)}) رسید. دستور بستن صادر گردید.`
-            );
-            this.createOrder({
-              symbol: pos.symbol || 'XAUUSD.m',
-              type: 'CLOSE',
-              lot: pos.lot || 0.01,
-              source: 'ai_agent',
-              accountId: targetAccountId,
-            });
-          }
-        } else if (profit <= -targetSLUSD && ticket > 0) {
-          const lastTrigger = (this as any)[`_triggered_sl_${ticket}`];
-          if (!lastTrigger || Date.now() - lastTrigger > 10000) {
-            (this as any)[`_triggered_sl_${ticket}`] = Date.now();
-            this.logTradingActivity(
-              'ai_analysis',
-              `🛡️ [محافظ هوشمند هرمس]: پوزیشن تیکت #${ticket} به حد ضرر مجاز ($${profit.toFixed(2)} <= -$${targetSLUSD.toFixed(2)}) رسید. دستور بستن فوری صادر شد.`
-            );
-            this.createOrder({
-              symbol: pos.symbol || 'XAUUSD.m',
-              type: 'CLOSE',
-              lot: pos.lot || 0.01,
-              source: 'ai_agent',
-              accountId: targetAccountId,
-            });
-          }
-        }
-      }
-    }
-
     // Autonomous trading check
     this.runAutonomousScalpCheck();
 
@@ -2145,30 +2101,13 @@ ${compactChatHistory.join('\n')}
       }
     }
 
-    // Phase 3 Risk Engine Pre-Execution Rule Checks & Dollar-to-Price SL/TP Conversion
+    // Phase 3 Risk Engine Pre-Execution Rule Checks
     if (orderInput.type === 'BUY' || orderInput.type === 'SELL') {
-      const tick = targetAcc.lastTick || this.state.lastTick;
-      if (tick && tick.ask > 0) {
-        const refPrice = orderInput.type === 'BUY' ? tick.ask : tick.bid;
-        const lot = orderInput.lot || 0.01;
-        const contractSize = (targetAcc.bridgeStatus.unifiedSnapshot?.symbolSpec?.contractSize) || 100;
-
-        // Auto-convert SL if passed as a relative dollar offset (e.g., sl = 3.0 or 2.5 when market price is 2400)
-        if (orderInput.sl && orderInput.sl > 0 && orderInput.sl < refPrice * 0.5) {
-          const dollarSL = orderInput.sl;
-          const deltaPrice = dollarSL / (lot * contractSize);
-          orderInput.sl = Number((orderInput.type === 'BUY' ? refPrice - deltaPrice : refPrice + deltaPrice).toFixed(2));
-        }
-
-        // Auto-convert TP if passed as a relative dollar offset (e.g., tp = 1.0 or 5.0 when market price is 2400)
-        if (orderInput.tp && orderInput.tp > 0 && orderInput.tp < refPrice * 0.5) {
-          const dollarTP = orderInput.tp;
-          const deltaPrice = dollarTP / (lot * contractSize);
-          orderInput.tp = Number((orderInput.type === 'BUY' ? refPrice + deltaPrice : refPrice - deltaPrice).toFixed(2));
-        }
-
-        // Auto-fill safe fallback Stop Loss if missing so mandatory SL rule passes cleanly
-        if (!orderInput.sl || orderInput.sl <= 0) {
+      // Auto-fill safe fallback Stop Loss if missing so mandatory SL rule passes cleanly
+      if (!orderInput.sl || orderInput.sl <= 0) {
+        const tick = targetAcc.lastTick || this.state.lastTick;
+        if (tick && tick.ask > 0) {
+          const refPrice = orderInput.type === 'BUY' ? tick.ask : tick.bid;
           orderInput.sl = Number((orderInput.type === 'BUY' ? refPrice * 0.99 : refPrice * 1.01).toFixed(2));
         }
       }
@@ -2740,64 +2679,38 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       price = NormalizeDouble(price, digits);
 
-      long stopsLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
-      double minStopDist = MathMax((double)stopsLevel, 10.0) * point;
-
-      // Guard against invalid SL for BUY (SL must be strictly below Ask price by at least minStopDist)
-      if(sl > 0.0)
+      // Guard against invalid SL for BUY (SL must be strictly below Ask price)
+      if(sl > 0.0 && sl >= price)
       {
-         if(sl >= (price - minStopDist))
-         {
-            sl = price - minStopDist - (10 * point);
-         }
+         sl = price - (100 * point);
       }
 
-      // Guard against invalid TP for BUY (TP must be strictly above Ask price by at least minStopDist)
-      if(tp > 0.0)
+      // Guard against invalid TP for BUY (TP must be strictly above Ask price)
+      if(tp > 0.0 && tp <= price)
       {
-         if(tp <= (price + minStopDist))
-         {
-            tp = price + minStopDist + (10 * point);
-         }
+         tp = price + (100 * point);
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         sl = price - MathMax(minStopDist * 2.0, price * 0.01);
+         sl = price * 0.99;
       }
 
       if(sl > 0.0) sl = NormalizeDouble(sl, digits);
       if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
-      // Primary market execution attempt with SL/TP
+      // Primary market execution attempt
       success = trade.Buy(lot, symbol, 0, sl, tp, "Hermes Order " + orderId);
-      
-      // Retry 1: If error 1016 (invalid stops), execute market order without initial SL/TP and set SL via PositionModify
-      if(!success && (trade.ResultRetcode() == 1016 || trade.ResultRetcode() == 10016))
-      {
-         Print("[Hermes Guard] Retry market order without initial SL/TP to bypass strict broker stop level...");
-         success = trade.Buy(lot, symbol, 0, 0, 0, "Hermes Order " + orderId);
-         if(success && (sl > 0.0 || tp > 0.0))
-         {
-            ulong ticket = trade.ResultOrder();
-            if(ticket > 0)
-            {
-               Sleep(100);
-               trade.PositionModify(ticket, sl, tp);
-            }
-         }
-      }
-
       if(!success)
       {
-         // Retry 2: Explicit price with IOC filling
+         // Retry 1: Explicit price with IOC filling
          trade.SetTypeFilling(ORDER_FILLING_IOC);
          success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
       if(!success)
       {
-         // Retry 3: RETURN filling mode
+         // Retry 2: RETURN filling mode
          trade.SetTypeFilling(ORDER_FILLING_RETURN);
          success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
@@ -2808,69 +2721,43 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       price = NormalizeDouble(price, digits);
 
-      long stopsLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
-      double minStopDist = MathMax((double)stopsLevel, 10.0) * point;
-
-      // Guard against invalid SL for SELL (SL must be strictly above Bid price by at least minStopDist)
-      if(sl > 0.0)
+      // Guard against invalid SL for SELL (SL must be strictly above Bid price)
+      if(sl > 0.0 && sl <= price)
       {
-         if(sl <= (price + minStopDist))
-         {
-            sl = price + minStopDist + (10 * point);
-         }
+         sl = price + (100 * point);
       }
 
-      // Guard against invalid TP for SELL (TP must be strictly below Bid price by at least minStopDist)
-      if(tp > 0.0)
+      // Guard against invalid TP for SELL (TP must be strictly below Bid price)
+      if(tp > 0.0 && tp >= price)
       {
-         if(tp >= (price - minStopDist))
-         {
-            tp = price - minStopDist - (10 * point);
-         }
+         tp = price - (100 * point);
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         sl = price + MathMax(minStopDist * 2.0, price * 0.01);
+         sl = price * 1.01;
       }
 
       if(sl > 0.0) sl = NormalizeDouble(sl, digits);
       if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
-      // Primary market execution attempt with SL/TP
+      // Primary market execution attempt
       success = trade.Sell(lot, symbol, 0, sl, tp, "Hermes Order " + orderId);
-
-      // Retry 1: If error 1016 (invalid stops), execute market order without initial SL/TP and set SL via PositionModify
-      if(!success && (trade.ResultRetcode() == 1016 || trade.ResultRetcode() == 10016))
-      {
-         Print("[Hermes Guard] Retry market order without initial SL/TP to bypass strict broker stop level...");
-         success = trade.Sell(lot, symbol, 0, 0, 0, "Hermes Order " + orderId);
-         if(success && (sl > 0.0 || tp > 0.0))
-         {
-            ulong ticket = trade.ResultOrder();
-            if(ticket > 0)
-            {
-               Sleep(100);
-               trade.PositionModify(ticket, sl, tp);
-            }
-         }
-      }
-
       if(!success)
       {
-         // Retry 2: Explicit price with IOC filling
+         // Retry 1: Explicit price with IOC filling
          trade.SetTypeFilling(ORDER_FILLING_IOC);
          success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
       if(!success)
       {
-         // Retry 3: RETURN filling mode
+         // Retry 2: RETURN filling mode
          trade.SetTypeFilling(ORDER_FILLING_RETURN);
          success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
    }
-   else if(typeStr == "CLOSE" || typeStr == "CLOSE_ALL")
+   else if(typeStr == "CLOSE_ALL")
    {
       int attemptedCount = 0;
       int closedCount = 0;
@@ -2879,34 +2766,12 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
          ulong ticket = PositionGetTicket(i);
          if(ticket > 0 && PositionSelectByTicket(ticket))
          {
-            string posSymbol = PositionGetString(POSITION_SYMBOL);
-            string checkPosSym = posSymbol; StringToUpper(checkPosSym);
-            string checkOrdSym = symbol; StringToUpper(checkOrdSym);
-            
-            bool isMatch = (typeStr == "CLOSE_ALL" || symbol == "" || symbol == InpDefaultSymbol || checkPosSym == checkOrdSym || StringFind(checkPosSym, checkOrdSym) >= 0 || StringFind(checkOrdSym, checkPosSym) >= 0);
-            if(isMatch)
+            if(PositionGetInteger(POSITION_MAGIC) == (long)InpMagicNumber)
             {
                attemptedCount++;
                if(trade.PositionClose(ticket))
                {
                   closedCount++;
-               }
-               else
-               {
-                  // Retry close with explicit filling mode IOC / RETURN if initial close fails
-                  trade.SetTypeFilling(ORDER_FILLING_IOC);
-                  if(trade.PositionClose(ticket))
-                  {
-                     closedCount++;
-                  }
-                  else
-                  {
-                     trade.SetTypeFilling(ORDER_FILLING_RETURN);
-                     if(trade.PositionClose(ticket))
-                     {
-                        closedCount++;
-                     }
-                  }
                }
             }
          }
@@ -2915,12 +2780,12 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
       if(!success)
       {
-         errorMsg = StringFormat("Close incomplete: %d of %d positions closed. CTrade Error %d: %s", closedCount, attemptedCount, trade.ResultRetcode(), trade.ResultComment());
-         PrintFormat("[Hermes Close Failed] %s", errorMsg);
+         errorMsg = StringFormat("CloseAll incomplete: %d of %d positions closed. CTrade Error %d: %s", closedCount, attemptedCount, trade.ResultRetcode(), trade.ResultComment());
+         PrintFormat("[Hermes CloseAll Failed] %s", errorMsg);
       }
       else
       {
-         PrintFormat("[Hermes Close Success] Closed %d positions for symbol %s", closedCount, symbol);
+         PrintFormat("[Hermes CloseAll Success] Closed %d positions matching Magic #%d", closedCount, InpMagicNumber);
          RegisterExecutedOrder(orderId);
       }
    }
