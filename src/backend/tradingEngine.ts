@@ -2679,38 +2679,64 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       price = NormalizeDouble(price, digits);
 
-      // Guard against invalid SL for BUY (SL must be strictly below Ask price)
-      if(sl > 0.0 && sl >= price)
+      long stopsLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+      double minStopDist = MathMax((double)stopsLevel, 10.0) * point;
+
+      // Guard against invalid SL for BUY (SL must be strictly below Ask price by at least minStopDist)
+      if(sl > 0.0)
       {
-         sl = price - (100 * point);
+         if(sl >= (price - minStopDist))
+         {
+            sl = price - minStopDist - (10 * point);
+         }
       }
 
-      // Guard against invalid TP for BUY (TP must be strictly above Ask price)
-      if(tp > 0.0 && tp <= price)
+      // Guard against invalid TP for BUY (TP must be strictly above Ask price by at least minStopDist)
+      if(tp > 0.0)
       {
-         tp = price + (100 * point);
+         if(tp <= (price + minStopDist))
+         {
+            tp = price + minStopDist + (10 * point);
+         }
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         sl = price * 0.99;
+         sl = price - MathMax(minStopDist * 2.0, price * 0.01);
       }
 
       if(sl > 0.0) sl = NormalizeDouble(sl, digits);
       if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
-      // Primary market execution attempt
+      // Primary market execution attempt with SL/TP
       success = trade.Buy(lot, symbol, 0, sl, tp, "Hermes Order " + orderId);
+      
+      // Retry 1: If error 1016 (invalid stops), execute market order without initial SL/TP and set SL via PositionModify
+      if(!success && (trade.ResultRetcode() == 1016 || trade.ResultRetcode() == 10016))
+      {
+         Print("[Hermes Guard] Retry market order without initial SL/TP to bypass strict broker stop level...");
+         success = trade.Buy(lot, symbol, 0, 0, 0, "Hermes Order " + orderId);
+         if(success && (sl > 0.0 || tp > 0.0))
+         {
+            ulong ticket = trade.ResultOrder();
+            if(ticket > 0)
+            {
+               Sleep(100);
+               trade.PositionModify(ticket, sl, tp);
+            }
+         }
+      }
+
       if(!success)
       {
-         // Retry 1: Explicit price with IOC filling
+         // Retry 2: Explicit price with IOC filling
          trade.SetTypeFilling(ORDER_FILLING_IOC);
          success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
       if(!success)
       {
-         // Retry 2: RETURN filling mode
+         // Retry 3: RETURN filling mode
          trade.SetTypeFilling(ORDER_FILLING_RETURN);
          success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
@@ -2721,38 +2747,64 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
       if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       price = NormalizeDouble(price, digits);
 
-      // Guard against invalid SL for SELL (SL must be strictly above Bid price)
-      if(sl > 0.0 && sl <= price)
+      long stopsLevel = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+      double minStopDist = MathMax((double)stopsLevel, 10.0) * point;
+
+      // Guard against invalid SL for SELL (SL must be strictly above Bid price by at least minStopDist)
+      if(sl > 0.0)
       {
-         sl = price + (100 * point);
+         if(sl <= (price + minStopDist))
+         {
+            sl = price + minStopDist + (10 * point);
+         }
       }
 
-      // Guard against invalid TP for SELL (TP must be strictly below Bid price)
-      if(tp > 0.0 && tp >= price)
+      // Guard against invalid TP for SELL (TP must be strictly below Bid price by at least minStopDist)
+      if(tp > 0.0)
       {
-         tp = price - (100 * point);
+         if(tp >= (price - minStopDist))
+         {
+            tp = price - minStopDist - (10 * point);
+         }
       }
 
       // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
       if(InpEnforceSL && sl <= 0.0 && price > 0)
       {
-         sl = price * 1.01;
+         sl = price + MathMax(minStopDist * 2.0, price * 0.01);
       }
 
       if(sl > 0.0) sl = NormalizeDouble(sl, digits);
       if(tp > 0.0) tp = NormalizeDouble(tp, digits);
 
-      // Primary market execution attempt
+      // Primary market execution attempt with SL/TP
       success = trade.Sell(lot, symbol, 0, sl, tp, "Hermes Order " + orderId);
+
+      // Retry 1: If error 1016 (invalid stops), execute market order without initial SL/TP and set SL via PositionModify
+      if(!success && (trade.ResultRetcode() == 1016 || trade.ResultRetcode() == 10016))
+      {
+         Print("[Hermes Guard] Retry market order without initial SL/TP to bypass strict broker stop level...");
+         success = trade.Sell(lot, symbol, 0, 0, 0, "Hermes Order " + orderId);
+         if(success && (sl > 0.0 || tp > 0.0))
+         {
+            ulong ticket = trade.ResultOrder();
+            if(ticket > 0)
+            {
+               Sleep(100);
+               trade.PositionModify(ticket, sl, tp);
+            }
+         }
+      }
+
       if(!success)
       {
-         // Retry 1: Explicit price with IOC filling
+         // Retry 2: Explicit price with IOC filling
          trade.SetTypeFilling(ORDER_FILLING_IOC);
          success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
       if(!success)
       {
-         // Retry 2: RETURN filling mode
+         // Retry 3: RETURN filling mode
          trade.SetTypeFilling(ORDER_FILLING_RETURN);
          success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
       }
