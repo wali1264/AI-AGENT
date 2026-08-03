@@ -2308,6 +2308,7 @@ input int      InpCheckInterval = 2;                             // فاصله �
 input string   InpDefaultSymbol = "XAUUSD.m";                     // نماد پیش‌فرض معامله
 input ulong    InpMagicNumber   = 77077;                          // شناسه مجیک نامبر اختصاصی ربات
 input bool     InpEnforceSL     = true;                           // اجبار داشتن حد ضرر (Mandatory Stop Loss Guard)
+input int      InpSlippage      = 10;                             // میزان لغزش مجاز (اسلیپیج به پوینت)
 
 //--- Global Variables & Tracker
 datetime g_lastCheckTime = 0;
@@ -2836,9 +2837,9 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
    // Sanitize error string for clean JSON encoding
    string cleanError = errorMsg;
-   StringReplace(cleanError, "\"", "'");
-   StringReplace(cleanError, "\r", " ");
-   StringReplace(cleanError, "\n", " ");
+   StringReplace(cleanError, "\\\"", "'");
+   StringReplace(cleanError, "\\r", " ");
+   StringReplace(cleanError, "\\n", " ");
 
    string jsonPayload = StringFormat(
       "{\\\"orderId\\\":\\\"%s\\\",\\\"status\\\":\\\"%s\\\",\\\"executionPrice\\\":%.5f,\\\"error\\\":\\\"%s\\\"}",
