@@ -243,7 +243,8 @@ async function startServer() {
   // Get Live Symbols received from connected MT5 EA
   app.get('/api/trading/symbols', (req: Request, res: Response) => {
     try {
-      const symbols = tradingEngine.getLiveSymbolsList();
+      const accountId = (req.query.accountId as string) || undefined;
+      const symbols = tradingEngine.getLiveSymbolsList(accountId);
       res.json({ status: 'ok', symbols });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });

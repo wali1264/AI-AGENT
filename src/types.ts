@@ -102,8 +102,11 @@ export interface TradeOrder {
   symbol: string;
   type: 'BUY' | 'SELL' | 'CLOSE' | 'CLOSE_ALL';
   lot: number;
+  lots?: number;
   sl?: number;
+  stopLoss?: number;
   tp?: number;
+  takeProfit?: number;
   status: 'pending' | 'executed' | 'failed' | 'cancelled';
   createdAt: string;
   executedAt?: string;

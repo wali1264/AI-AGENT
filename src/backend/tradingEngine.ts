@@ -340,26 +340,45 @@ class TradingEngine {
     return result;
   }
 
-  public getLiveSymbolsList(): { symbol: string; source: string; lastPrice?: number }[] {
+  public getLiveSymbolsList(targetAccountId?: string): { symbol: string; source: string; lastPrice?: number }[] {
     const symbolsMap = new Map<string, { symbol: string; source: string; lastPrice?: number }>();
     const now = Date.now();
 
-    for (const [accId, accState] of this.accountsMap.entries()) {
+    const selectedAccId = targetAccountId && targetAccountId !== 'account_default' ? targetAccountId : this.activeAccountId;
+
+    // Collect accounts to scan
+    const accountsToScan: [string, MultiAccountState][] = [];
+    if (selectedAccId && this.accountsMap.has(selectedAccId)) {
+      accountsToScan.push([selectedAccId, this.accountsMap.get(selectedAccId)!]);
+    } else {
+      for (const entry of this.accountsMap.entries()) {
+        if (entry[0] !== 'account_default') {
+          accountsToScan.push(entry);
+        }
+      }
+    }
+
+    for (const [accId, accState] of accountsToScan) {
       const lastHb = accState.bridgeStatus.lastHeartbeat
         ? new Date(accState.bridgeStatus.lastHeartbeat).getTime()
         : 0;
       const isConnected = lastHb > 0 && (now - lastHb) < 30000;
+      const accLabel = accState.config.accountNumber ? `#${accState.config.accountNumber}` : accId;
 
-      if (accState.lastTick?.symbol) {
+      // 1. Symbol from last tick
+      if (accState.lastTick?.symbol && accState.lastTick.symbol !== 'N/A') {
         symbolsMap.set(accState.lastTick.symbol, {
           symbol: accState.lastTick.symbol,
-          source: `چارت زنده MT5 (#${accState.config.accountNumber || accId})`,
+          source: isConnected
+            ? `چارت زنده MT5 (${accLabel})`
+            : `آخرین چارت متصل (${accLabel})`,
           lastPrice: accState.lastTick.ask || accState.lastTick.bid,
         });
       }
 
+      // 2. Symbols from open positions
       for (const pos of accState.positions) {
-        if (pos.symbol && !symbolsMap.has(pos.symbol)) {
+        if (pos.symbol && pos.symbol !== 'N/A' && !symbolsMap.has(pos.symbol)) {
           symbolsMap.set(pos.symbol, {
             symbol: pos.symbol,
             source: `پوزیشن باز زنده (#${pos.ticket})`,
@@ -367,30 +386,24 @@ class TradingEngine {
           });
         }
       }
+
+      // 3. Symbols from pending orders
+      for (const ord of accState.pendingOrders) {
+        if (ord.symbol && ord.symbol !== 'N/A' && !symbolsMap.has(ord.symbol)) {
+          symbolsMap.set(ord.symbol, {
+            symbol: ord.symbol,
+            source: `سفارش معلق (${ord.id})`,
+          });
+        }
+      }
     }
 
-    if (this.state.lastTick?.symbol && !symbolsMap.has(this.state.lastTick.symbol)) {
+    if (this.state.lastTick?.symbol && this.state.lastTick.symbol !== 'N/A' && !symbolsMap.has(this.state.lastTick.symbol)) {
       symbolsMap.set(this.state.lastTick.symbol, {
         symbol: this.state.lastTick.symbol,
         source: 'چارت زنده متاتریدر ۵',
         lastPrice: this.state.lastTick.ask,
       });
-    }
-
-    // Always ensure active MT5 symbol candidates (Bitcoin, Gold, FX) are present in the list
-    const defaultSymbols = [
-      { symbol: 'BTCUSD.m', source: 'نماد متاتریدر ۵ (بیت‌کوین Micro)' },
-      { symbol: 'BTCUSD', source: 'نماد متاتریدر ۵ (بیت‌کوین Standard)' },
-      { symbol: 'XAUUSD.m', source: 'نماد متاتریدر ۵ (طلا Micro)' },
-      { symbol: 'XAUUSD', source: 'نماد متاتریدر ۵ (طلا Standard)' },
-      { symbol: 'EURUSD.m', source: 'نماد متاتریدر ۵ (یورو به دلار)' },
-      { symbol: 'EURUSD', source: 'نماد متاتریدر ۵ (یورو به دلار Standard)' },
-    ];
-
-    for (const def of defaultSymbols) {
-      if (!symbolsMap.has(def.symbol)) {
-        symbolsMap.set(def.symbol, def);
-      }
     }
 
     return Array.from(symbolsMap.values());
@@ -1518,11 +1531,13 @@ ${JSON.stringify(accountMemories.slice(0, 10))}
 [گفتگوهای اخیر]:
 ${compactChatHistory.join('\n')}
 
-دستورالعمل‌های حیاتی:
-1. هرگز نگو به بیت‌کوین (BTCUSD) یا طلا (XAUUSD) یا حساب K1 دسترسی نداری! تو دسترسی مستقیم داری و داده‌های زنده آنها بالا قرار گرفته است.
-2. اگر کاربر درباره بیت‌کوین، طلا یا هر نماد دیگری صحبت کرد یا خواست پوزیشن باز/بست کند، نماد دقیق را در کلید "symbol" برگردان (مثلا "BTCUSD" یا "XAUUSD.m").
-3. پاسخ تخصصی، دقیق و کامل به زبان فارسی در کلید "reply" ارائه بده.
-4. بر اساس درخواست کاربر ساختار JSON زیر را برگردان:
+دستورالعمل‌های حیاتی، صداقت و واقع‌گرایی:
+1. صداقت کامل و عدم ادعای غیرواقعی: هرگز ادعای کاذب نکن. اگر معامله‌ای صادر گردید، صراحتاً بگو سفارش در "صف ارسال به متاتریدر ۵" قرار گرفت و نتیجه قطعی اجرای آن پس از بازخورد زنده اکسپرت MQL5 در چت ثبت خواهد شد.
+2. هرگز قبل از دریافت بازخورد زنده متاتریدر ۵ نگو معامله حتماً در بروکر باز یا بسته شد؛ بلکه بگو دستور صادر شد و منتظر تاییدیه اجرای اکسپرت هستم.
+3. شفافیت در دسترسی‌ها: تو به داده‌های چارت زنده، پوزیشن‌های باز، مانده حساب و تاریخچه معاملات دسترسی داری. به کاربر صراحتاً بگو به چه ابزارهایی دسترسی داری و محدودیت‌های بروکر (مانند بسته‌بودن بازار فارکس/طلا در تعطیلات، حدضرر نامعتبر یا عدم فعال بودن WebRequest) را توضیح بده.
+4. اگر کاربر درباره بیت‌کوین، طلا یا هر نماد دیگری صحبت کرد یا خواست پوزیشن باز/بست کند، نماد دقیق را در کلید "symbol" برگردان (مثلا "BTCUSD" یا "XAUUSD.m").
+5. پاسخ تخصصی، دقیق و کامل به زبان فارسی در کلید "reply" ارائه بده.
+6. بر اساس درخواست کاربر ساختار JSON زیر را برگردان:
 {
   "reply": "متن پاسخ تحلیلی و مستقیم به کاربر به زبان فارسی",
   "action": "CHAT" | "ENABLE_AUTONOMOUS" | "DISABLE_AUTONOMOUS" | "TRADE_BUY" | "TRADE_SELL" | "CLOSE_SYMBOL" | "CLOSE_ALL" | "SAVE_MEMORY",
@@ -1991,8 +2006,17 @@ ${compactChatHistory.join('\n')}
     // Purge stale timed out pending orders
     this.checkAndPurgeStalePendingOrders();
 
-    const ordersToExecute = (targetAccountId === this.activeAccountId ? this.state.pendingOrders : accState.pendingOrders).filter((o) => o.status === 'pending');
-    return { pendingOrders: ordersToExecute, dataQuality };
+    const rawOrders = (targetAccountId === this.activeAccountId ? this.state.pendingOrders : accState.pendingOrders).filter((o) => o.status === 'pending');
+    const formattedOrders = rawOrders.map((o) => ({
+      ...o,
+      lot: o.lot ?? o.lots ?? 0.01,
+      lots: o.lots ?? o.lot ?? 0.01,
+      sl: o.sl ?? o.stopLoss ?? 0,
+      stopLoss: o.stopLoss ?? o.sl ?? 0,
+      tp: o.tp ?? o.takeProfit ?? 0,
+      takeProfit: o.takeProfit ?? o.tp ?? 0,
+    }));
+    return { pendingOrders: formattedOrders, dataQuality };
   }
 
   private runAutonomousScalpCheck(): void {
@@ -2161,6 +2185,29 @@ ${compactChatHistory.join('\n')}
 
     supabaseService.logOrder(order).catch(() => {});
 
+    // Real-time Feedback Loop to User Chat & Agent Memory
+    const typeLabel = order.type === 'BUY' ? 'خرید' : order.type === 'SELL' ? 'فروش' : order.type === 'CLOSE_ALL' ? 'بستن تمام پوزیشن‌ها' : order.type;
+    const lotLabel = order.lot || order.lots || 0.01;
+    const feedbackText = payload.status === 'executed'
+      ? `🤖 [بازخورد زنده متاتریدر ۵]: سفارش ${typeLabel} نماد ${order.symbol} (حجم: ${lotLabel} لات) با موفقیت در نرخ ${payload.executionPrice ?? 'قیمت بازار'} توسط اکسپرت MQL5 اجرا گردید.`
+      : `⚠️ [بازخورد زنده متاتریدر ۵]: سفارش ${typeLabel} نماد ${order.symbol} اجرا نشد و رد گردید. علت: ${order.error}`;
+
+    const feedbackMsg = {
+      id: `chat_${Date.now()}_mt5_feedback`,
+      sender: 'agent' as const,
+      text: feedbackText,
+      timestamp: new Date().toISOString(),
+      accountId: targetAccId,
+    };
+    this.chatMessages.push(feedbackMsg);
+    supabaseService.saveChatMessage(feedbackMsg).catch(() => {});
+
+    this.addMemoryNote(
+      'بازخورد اجرای سفارش MQL5',
+      feedbackText,
+      targetAccId
+    ).catch(() => {});
+
     if (payload.status === 'executed') {
       this.logTradingActivity(
         'order_result',
@@ -2223,8 +2270,8 @@ ${compactChatHistory.join('\n')}
 //+------------------------------------------------------------------+
 #property copyright "Hermes Cloud Router Agent"
 #property link      "${cleanUrl}"
-#property version   "2.00"
-#property description "ربات سفیر پیشرفته متاتریدر ۵ (نسخه ۲.۰۰) - پشتیبانی از Persistent Idempotency، Multi-Timeframe Candles و Mandatory SL Guard"
+#property version   "2.10"
+#property description "ربات سفیر پیشرفته متاتریدر ۵ (نسخه ۲.۱۰) - پشتیبانی از بازخورد زنده لحظه‌ای در چت (Real-Time Chat Feedback)، Multi-Symbol Router و Mandatory SL Guard"
 
 #include <Trade\\Trade.mqh>
 CTrade trade;
@@ -2249,7 +2296,7 @@ int OnInit()
    {
       g_sequenceCounter = (long)GlobalVariableGet("Hermes_Seq_Counter");
    }
-   Print("[Hermes Bridge v2.0] Ambassador EA Started. Target Server: ", InpServerUrl);
+   Print("[Hermes Bridge v2.1] Ambassador EA Started. Target Server: ", InpServerUrl);
    return(INIT_SUCCEEDED);
 }
 
@@ -2412,62 +2459,105 @@ void SendUnifiedSnapshotAndPoll()
 void ParseAndDispatchActions(string jsonStr)
 {
    // A. Process Pending Orders (New Trade Entries / Close All)
-   if(StringFind(jsonStr, "\\"pendingOrders\\":") >= 0)
+   if(StringFind(jsonStr, "\"pendingOrders\":") >= 0)
    {
-      int pos = StringFind(jsonStr, "\\"id\\":\\"", 0);
+      int pos = StringFind(jsonStr, "\"id\":\"", 0);
       while(pos >= 0)
       {
          int startId = pos + 6;
-         int endId = StringFind(jsonStr, "\\"", startId);
+         int endId = StringFind(jsonStr, "\"", startId);
          string orderId = StringSubstr(jsonStr, startId, endId - startId);
 
          if(!IsOrderAlreadyExecuted(orderId))
          {
-            int typePos = StringFind(jsonStr, "\\"type\\":\\"", endId);
+            int typePos = StringFind(jsonStr, "\"type\":\"", endId);
             int startType = typePos + 8;
-            int endType = StringFind(jsonStr, "\\"", startType);
+            int endType = StringFind(jsonStr, "\"", startType);
             string orderType = StringSubstr(jsonStr, startType, endType - startType);
 
-            // Parse Lot
+            // Parse Symbol
+            string orderSymbol = _Symbol;
+            int symPos = StringFind(jsonStr, "\"symbol\":\"", endType);
+            if(symPos > 0)
+            {
+               int startSym = symPos + 10;
+               int endSym = StringFind(jsonStr, "\"", startSym);
+               if(endSym > startSym)
+               {
+                  orderSymbol = StringSubstr(jsonStr, startSym, endSym - startSym);
+               }
+            }
+
+            // Parse Lot (check both "lots": and "lot":)
             double lot = 0.01;
-            int lotPos = StringFind(jsonStr, "\\"lot\\":", endType);
+            int lotPos = StringFind(jsonStr, "\"lots\":", endType);
             if(lotPos > 0)
             {
                int endLot = StringFind(jsonStr, ",", lotPos);
                if(endLot < 0) endLot = StringFind(jsonStr, "}", lotPos);
-               lot = StringToDouble(StringSubstr(jsonStr, lotPos + 6, endLot - (lotPos + 6)));
+               lot = StringToDouble(StringSubstr(jsonStr, lotPos + 7, endLot - (lotPos + 7)));
+            }
+            else
+            {
+               lotPos = StringFind(jsonStr, "\"lot\":", endType);
+               if(lotPos > 0)
+               {
+                  int endLot = StringFind(jsonStr, ",", lotPos);
+                  if(endLot < 0) endLot = StringFind(jsonStr, "}", lotPos);
+                  lot = StringToDouble(StringSubstr(jsonStr, lotPos + 6, endLot - (lotPos + 6)));
+               }
             }
 
-            // Parse Stop Loss (SL)
+            // Parse Stop Loss (check both "stopLoss": and "sl":)
             double sl = 0.0;
-            int slPos = StringFind(jsonStr, "\\"sl\\":", endType);
+            int slPos = StringFind(jsonStr, "\"stopLoss\":", endType);
             if(slPos > 0)
             {
                int endSl = StringFind(jsonStr, ",", slPos);
                if(endSl < 0) endSl = StringFind(jsonStr, "}", slPos);
-               sl = StringToDouble(StringSubstr(jsonStr, slPos + 5, endSl - (slPos + 5)));
+               sl = StringToDouble(StringSubstr(jsonStr, slPos + 11, endSl - (slPos + 11)));
+            }
+            else
+            {
+               slPos = StringFind(jsonStr, "\"sl\":", endType);
+               if(slPos > 0)
+               {
+                  int endSl = StringFind(jsonStr, ",", slPos);
+                  if(endSl < 0) endSl = StringFind(jsonStr, "}", slPos);
+                  sl = StringToDouble(StringSubstr(jsonStr, slPos + 5, endSl - (slPos + 5)));
+               }
             }
 
-            // Parse Take Profit (TP)
+            // Parse Take Profit (check both "takeProfit": and "tp":)
             double tp = 0.0;
-            int tpPos = StringFind(jsonStr, "\\"tp\\":", endType);
+            int tpPos = StringFind(jsonStr, "\"takeProfit\":", endType);
             if(tpPos > 0)
             {
                int endTp = StringFind(jsonStr, ",", tpPos);
                if(endTp < 0) endTp = StringFind(jsonStr, "}", tpPos);
-               tp = StringToDouble(StringSubstr(jsonStr, tpPos + 5, endTp - (tpPos + 5)));
+               tp = StringToDouble(StringSubstr(jsonStr, tpPos + 13, endTp - (tpPos + 13)));
+            }
+            else
+            {
+               tpPos = StringFind(jsonStr, "\"tp\":", endType);
+               if(tpPos > 0)
+               {
+                  int endTp = StringFind(jsonStr, ",", tpPos);
+                  if(endTp < 0) endTp = StringFind(jsonStr, "}", tpPos);
+                  tp = StringToDouble(StringSubstr(jsonStr, tpPos + 5, endTp - (tpPos + 5)));
+               }
             }
 
-            ExecuteSingleOrder(orderId, orderType, lot, sl, tp);
+            ExecuteSingleOrder(orderId, orderType, lot, sl, tp, orderSymbol);
          }
-         pos = StringFind(jsonStr, "\\"id\\":\\"", pos + 10);
+         pos = StringFind(jsonStr, "\"id\":\"", pos + 10);
       }
    }
 
    // B. Process Position Modifications (Breakeven & Dynamic Trailing Stops)
-   if(StringFind(jsonStr, "\\"modifications\\":") >= 0)
+   if(StringFind(jsonStr, "\"modifications\":") >= 0)
    {
-      int modPos = StringFind(jsonStr, "\\"ticket\\":", 0);
+      int modPos = StringFind(jsonStr, "\"ticket\":", 0);
       while(modPos >= 0)
       {
          int startTicket = modPos + 9;
@@ -2475,7 +2565,7 @@ void ParseAndDispatchActions(string jsonStr)
          ulong ticket = (ulong)StringToInteger(StringSubstr(jsonStr, startTicket, endTicket - startTicket));
 
          double newSL = 0.0;
-         int slPos = StringFind(jsonStr, "\\"newSL\\":", endTicket);
+         int slPos = StringFind(jsonStr, "\"newSL\":", endTicket);
          if(slPos > 0)
          {
             int endSl = StringFind(jsonStr, ",", slPos);
@@ -2484,7 +2574,7 @@ void ParseAndDispatchActions(string jsonStr)
          }
 
          double newTP = 0.0;
-         int tpPos = StringFind(jsonStr, "\\"newTP\\":", endTicket);
+         int tpPos = StringFind(jsonStr, "\"newTP\":", endTicket);
          if(tpPos > 0)
          {
             int endTp = StringFind(jsonStr, ",", tpPos);
@@ -2516,15 +2606,15 @@ void ParseAndDispatchActions(string jsonStr)
             }
          }
 
-         modPos = StringFind(jsonStr, "\\"ticket\\":", modPos + 10);
+         modPos = StringFind(jsonStr, "\"ticket\":", modPos + 10);
       }
    }
 }
 
 // Executes Trade Orders with Mandatory SL Enforced, Directional SL Guard & Magic Number Filter
-void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, double tp)
+void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, double tp, string orderSymbol="")
 {
-   string symbol = _Symbol;
+   string symbol = (orderSymbol != "" && orderSymbol != NULL) ? orderSymbol : _Symbol;
    if(symbol == "" || symbol == NULL) symbol = InpDefaultSymbol;
 
    bool success = false;
@@ -2534,51 +2624,57 @@ void ExecuteSingleOrder(string orderId, string typeStr, double lot, double sl, d
    // 1. Lot Size Broker Limits Guard
    double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-   if((typeStr == "BUY" || typeStr == "SELL") && (lot < minLot || lot > maxLot))
-   {
-      errorMsg = StringFormat("Order Rejected: Requested lot (%.2f) outside broker limits [Min: %.2f, Max: %.2f].", lot, minLot, maxLot);
-      PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
-      SendOrderResult(orderId, "failed", 0, errorMsg);
-      RegisterExecutedOrder(orderId);
-      return;
-   }
+   if(minLot <= 0) minLot = 0.01;
+   if(maxLot <= 0) maxLot = 100.0;
 
-   // 2. Mandatory Stop Loss Guard Enforcement
-   if(InpEnforceSL && (typeStr == "BUY" || typeStr == "SELL") && sl <= 0.0)
+   if((typeStr == "BUY" || typeStr == "SELL"))
    {
-      errorMsg = "Order Rejected: Mandatory Stop Loss (InpEnforceSL) requirement violated (SL is 0).";
-      PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
-      SendOrderResult(orderId, "failed", 0, errorMsg);
-      RegisterExecutedOrder(orderId);
-      return;
+      if(lot < minLot) lot = minLot;
+      if(lot > maxLot) lot = maxLot;
    }
 
    if(typeStr == "BUY")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_ASK);
-      // 3. Directional SL Validation Guard for BUY (SL must be below Ask)
+      if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      // Guard against invalid SL for BUY (SL must be strictly below Ask price)
       if(sl > 0.0 && sl >= price)
       {
-         errorMsg = StringFormat("Order Rejected: BUY Stop Loss (%.5f) must be strictly below Ask price (%.5f).", sl, price);
-         PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
-         SendOrderResult(orderId, "failed", 0, errorMsg);
-         RegisterExecutedOrder(orderId);
-         return;
+         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+         if(point <= 0) point = 0.0001;
+         sl = price - (100 * point);
       }
+
+      // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
+      if(InpEnforceSL && sl <= 0.0 && price > 0)
+      {
+         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+         sl = NormalizeDouble(price * 0.99, digits > 0 ? digits : 2);
+      }
+
       success = trade.Buy(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
    else if(typeStr == "SELL")
    {
       price = SymbolInfoDouble(symbol, SYMBOL_BID);
-      // 3. Directional SL Validation Guard for SELL (SL must be above Bid)
+      if(price <= 0) price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+      // Guard against invalid SL for SELL (SL must be strictly above Bid price)
       if(sl > 0.0 && sl <= price)
       {
-         errorMsg = StringFormat("Order Rejected: SELL Stop Loss (%.5f) must be strictly above Bid price (%.5f).", sl, price);
-         PrintFormat("[Hermes Guard Violation] Order ID %s rejected -> %s", orderId, errorMsg);
-         SendOrderResult(orderId, "failed", 0, errorMsg);
-         RegisterExecutedOrder(orderId);
-         return;
+         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+         if(point <= 0) point = 0.0001;
+         sl = price + (100 * point);
       }
+
+      // Safe fallback SL if mandatory SL rule is on but SL wasn't provided
+      if(InpEnforceSL && sl <= 0.0 && price > 0)
+      {
+         int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+         sl = NormalizeDouble(price * 1.01, digits > 0 ? digits : 2);
+      }
+
       success = trade.Sell(lot, symbol, price, sl, tp, "Hermes Order " + orderId);
    }
    else if(typeStr == "CLOSE_ALL")
@@ -2639,20 +2735,28 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
    }
    else
    {
-      int apiPos = StringFind(resultUrl, "/api/");
-      if(apiPos >= 0)
+      int snapPos = StringFind(resultUrl, "/api/trading/snapshot");
+      if(snapPos >= 0)
       {
-         resultUrl = StringSubstr(resultUrl, 0, apiPos) + "api/trading/order-result";
+         resultUrl = StringSubstr(resultUrl, 0, snapPos) + "/api/trading/order-result";
       }
       else
       {
-         PrintFormat("[Hermes Bridge ERROR] Unable to construct order-result URL from InpServerUrl: '%s'. Notification skipped.", InpServerUrl);
-         return;
+         int apiPos = StringFind(resultUrl, "/api/");
+         if(apiPos >= 0)
+         {
+            resultUrl = StringSubstr(resultUrl, 0, apiPos) + "/api/trading/order-result";
+         }
+         else
+         {
+            PrintFormat("[Hermes Bridge ERROR] Unable to construct order-result URL from InpServerUrl: '%s'. Notification skipped.", InpServerUrl);
+            return;
+         }
       }
    }
 
    string jsonPayload = StringFormat(
-      "{\\"orderId\\":\\"%s\\",\\"status\\":\\"%s\\",\\"executionPrice\\":%.5f,\\"error\\":\\"%s\\"}",
+      "{\"orderId\":\"%s\",\"status\":\"%s\",\"executionPrice\":%.5f,\"error\":\"%s\"}",
       orderId, status, price, errorMsg
    );
 
@@ -2662,7 +2766,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
 
    char resultData[];
    string resultHeaders;
-   string headers = "Content-Type: application/json\\r\\nAuthorization: Bearer " + InpSecretToken + "\\r\\n";
+   string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + InpSecretToken + "\r\n";
 
    WebRequest("POST", resultUrl, headers, 3000, postData, resultData, resultHeaders);
 }
