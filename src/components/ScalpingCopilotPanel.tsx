@@ -146,15 +146,15 @@ export const ScalpingCopilotPanel: React.FC<ScalpingCopilotPanelProps> = ({
           setAnalysis({
             symbol: data.analysis.symbol || selectedSymbol,
             biasScore: rawScore,
-            marketState: data.analysis.marketState || 'TRENDING_UP',
-            confidence: data.analysis.confidence || 80,
-            stability: data.analysis.stability || 92,
+            marketState: data.analysis.marketState || 'LOW_LIQUIDITY',
+            confidence: data.analysis.confidence ?? 0,
+            stability: data.analysis.stability ?? 0,
             breakdown: data.analysis.breakdown || {
-              trend: 22,
-              momentum: 18,
-              structure: 15,
-              priceAction: 8,
-              llmContext: 6,
+              trend: 0,
+              momentum: 0,
+              structure: 0,
+              priceAction: 0,
+              llmContext: 0,
             },
             reasons: data.analysis.reasons || [],
             riskGuardVeto: isVeto,
@@ -175,7 +175,7 @@ export const ScalpingCopilotPanel: React.FC<ScalpingCopilotPanelProps> = ({
     fetchOrCalculateAnalysis();
     const interval = setInterval(() => {
       fetchOrCalculateAnalysis();
-    }, 15000); // 15s refresh
+    }, 3000); // 3-second live refresh
     return () => clearInterval(interval);
   }, [selectedSymbol, activeAccountId]);
 

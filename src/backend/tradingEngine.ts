@@ -2011,8 +2011,8 @@ ${compactChatHistory.join('\n')}
       };
     }
 
-    // Virtual Risk Engine Guard: Monitor open positions against target dollar loss or profit
-    if (positions && positions.length > 0) {
+    // Virtual Risk Engine Guard: Monitor open positions against target dollar loss or profit (ONLY if autonomous trading is explicitly enabled)
+    if (this.autonomousTrading.enabled && positions && positions.length > 0) {
       for (const pos of positions) {
         const profit = pos.profit ?? pos.currentProfit ?? 0;
         const ticket = pos.ticket;
@@ -2373,7 +2373,7 @@ ${compactChatHistory.join('\n')}
     const bridge = accState.bridgeStatus || this.state.bridgeStatus;
 
     // Strict No-Mock Guard: If MetaTrader 5 EA is disconnected or hasn't sent a live tick
-    if (!tick) {
+    if (!tick || !bridge?.isConnected) {
       return {
         symbol,
         biasScore: 0,
@@ -2387,7 +2387,7 @@ ${compactChatHistory.join('\n')}
           priceAction: 0,
           llmContext: 0,
         },
-        reasons: ['ارتباط با اکسپرت سفیر متاتریدر ۵ برقرار نیست (در انتظار دریافت قیمت و داده‌های زنده)'],
+        reasons: ['ارتباط متاتریدر ۵ برقرار نیست - در انتظار دریافت داده‌های زنده از ربات سفیر (MQL5 EA)'],
         riskGuardVeto: true,
         riskGuardReason: 'اتصال متاتریدر ۵ قطع است - جهت جلوگیری از خطا، صدور معامله مسدود گردید.',
         recommendedAction: 'NO_TRADE',
@@ -2398,18 +2398,26 @@ ${compactChatHistory.join('\n')}
     const ask = tick.ask;
     const bid = tick.bid;
     const spread = tick.spread || Math.abs(ask - bid) || 0;
+    const indicators = bridge.unifiedSnapshot?.indicators;
 
-    // 1. Calculate Multi-Factor Weights
-    let trendScore = 22; // Trend component
-    if (tick && tick.ask > 2405) trendScore = 25;
-    else if (tick && tick.ask < 2390) trendScore = -22;
+    // 1. Calculate Multi-Factor Weights dynamically from live price action & indicators
+    let trendScore = 0;
+    const ema20 = indicators?.M5?.ema20 || ask;
+    if (ask > ema20) {
+      trendScore = 25;
+    } else if (ask < ema20) {
+      trendScore = -25;
+    }
 
-    let momentumScore = 18; // RSI / Momentum component
-    if (spread > 2.5) momentumScore = -12;
+    let momentumScore = 0;
+    const rsi = indicators?.M1?.rsi14 || indicators?.M5?.rsi14 || 50;
+    if (rsi > 60) momentumScore = 18;
+    else if (rsi < 40) momentumScore = -18;
+    else momentumScore = Math.round((rsi - 50) * 0.8);
 
-    let structureScore = 15; // Market Structure component
-    let priceActionScore = 8; // Price Action component
-    let llmContextScore = 6;  // LLM Context / Macro
+    let structureScore = trendScore > 0 ? 15 : -15;
+    let priceActionScore = momentumScore > 0 ? 10 : -10;
+    let llmContextScore = 5;
 
     let totalBias = trendScore + momentumScore + structureScore + priceActionScore + llmContextScore;
     totalBias = Math.max(-100, Math.min(100, Math.round(totalBias)));
@@ -2444,7 +2452,7 @@ ${compactChatHistory.join('\n')}
     // 4. Confluence Confidence & Signal Stability Index
     const positiveFactors = [trendScore, momentumScore, structureScore, priceActionScore, llmContextScore].filter((f) => f > 0).length;
     const confidence = Math.round((positiveFactors / 5) * 100);
-    const stability = 92;
+    const stability = bridge.isConnected ? 95 : 0;
 
     // 5. Recommended Action
     let recommendedAction: 'BUY' | 'SELL' | 'NO_TRADE' = 'NO_TRADE';
@@ -2453,16 +2461,16 @@ ${compactChatHistory.join('\n')}
       else if (totalBias < -20 && confidence >= 60) recommendedAction = 'SELL';
     }
 
-    // 6. Structured Reasons
+    // 6. Dynamic Real-Time Reasons
     const reasons: string[] = [];
-    if (trendScore > 0) reasons.push(`روند M5 صعودی قوی بالاتر از میانگین EMA 20`);
-    else reasons.push(`فشار فروش در تایم‌فریم M5 زیر سطوح مقاومت`);
+    if (trendScore > 0) {
+      reasons.push(`روند M5 صعودی قوی (نرخ زنده ${ask.toFixed(2)} بالاتر از EMA20)`);
+    } else {
+      reasons.push(`فشار فروش M5 (نرخ زنده ${ask.toFixed(2)} زیر EMA20)`);
+    }
 
-    if (momentumScore > 0) reasons.push(`واگرایی مثبت و همگرایی شاخص RSI M1`);
-    else reasons.push(`کاهش مومنتوم صعودی و افزایش نوسان لحظه‌ای`);
-
-    if (structureScore > 0) reasons.push(`شکست و تثبیت بالای سطح کلیدی ۲,۴۰۲ دلار`);
-    if (!riskGuardVeto) reasons.push(`ثبات اسپرد معامله ($${spread.toFixed(2)})`);
+    reasons.push(`مومنتوم شاخص RSI زنده: ${rsi.toFixed(1)}`);
+    reasons.push(`اسپرد معامله زنده: $${spread.toFixed(2)}`);
 
     const result = {
       symbol,
