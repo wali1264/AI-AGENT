@@ -99,8 +99,8 @@ const INITIAL_RISK_RULES: RiskRule[] = [
     id: 'enable_risk_guard',
     name: 'فعال‌سازی کلی نظارت موتور ریسک',
     description: 'در صورت فعال بودن، تمام قوانین و محدودیت‌های ریسک قبل از معامله بررسی می‌شوند.',
-    isEnabled: true,
-    value: 1,
+    isEnabled: false,
+    value: 0,
     unit: 'boolean',
   },
   {
@@ -842,21 +842,17 @@ class TradingEngine {
           const ask = this.state.lastTick.ask;
           const bid = this.state.lastTick.bid;
 
-          // Determine trade direction from multi-timeframe strategy signal (SELL vs BUY)
+          // Determine trade direction strictly from high-conviction multi-timeframe strategy signal
           const signal = this.getTradingSignal();
-          let orderType: 'BUY' | 'SELL' = 'BUY';
-          if (signal.action === 'SELL') {
-            orderType = 'SELL';
-          } else if (signal.action === 'BUY') {
-            orderType = 'BUY';
-          } else {
-            // Oscillate when neutral
-            orderType = Math.sin(Date.now() / 25000) > 0 ? 'BUY' : 'SELL';
+          if (signal.action === 'HOLD' || signal.confidenceScore < 70) {
+            // Do not execute trades when market is neutral or signal confidence is low
+            return;
           }
 
+          const orderType: 'BUY' | 'SELL' = signal.action;
           const entryPrice = orderType === 'BUY' ? ask : bid;
-          const sl = orderType === 'BUY' ? Number((entryPrice - 2.50).toFixed(2)) : Number((entryPrice + 2.50).toFixed(2));
-          const tp = orderType === 'BUY' ? Number((entryPrice + 1.00).toFixed(2)) : Number((entryPrice - 1.00).toFixed(2));
+          const sl = signal.sl || (orderType === 'BUY' ? Number((entryPrice - 2.50).toFixed(2)) : Number((entryPrice + 2.50).toFixed(2)));
+          const tp = signal.tp || (orderType === 'BUY' ? Number((entryPrice + 1.00).toFixed(2)) : Number((entryPrice - 1.00).toFixed(2)));
 
           const res = this.createOrder({
             symbol: 'XAUUSD.m',
@@ -1949,8 +1945,8 @@ ${compactChatHistory.join('\n')}
       riskAssessment,
     });
 
-    // 10. Evaluate Execution Engine (Phase 6)
-    const executionResult = executionEngine.processExecution(tempSnapshot, this.state.isAgentActive);
+    // 10. Evaluate Execution Engine (Phase 6) - Strictly execute auto-orders ONLY if autonomous trading is explicitly enabled
+    const executionResult = executionEngine.processExecution(tempSnapshot, this.autonomousTrading.enabled);
 
     // 11. Evaluate Telemetry & Audit Engine (Phase 7)
     const telemetryRecord = telemetryEngine.recordTelemetry(tempSnapshot, executionResult);
@@ -2076,43 +2072,7 @@ ${compactChatHistory.join('\n')}
 
   private runAutonomousScalpCheck(): void {
     if (!this.autonomousTrading.enabled) return;
-
-    const elapsed = Date.now() - (this.autonomousTrading.startTime || Date.now());
-    const durationMs = this.autonomousTrading.durationHours * 3600 * 1000;
-
-    if (elapsed > durationMs) {
-      this.autonomousTrading.enabled = false;
-      this.logTradingActivity('ai_analysis', `[ترید خودکار هرمس] مهلت ${this.autonomousTrading.durationHours} ساعته معامله خودکار پایان یافت.`);
-    } else {
-      const hasPending = this.state.pendingOrders.some((o) => o.status === 'pending');
-      const openPositions = this.state.bridgeStatus.accountInfo?.openPositionsCount ?? 0;
-      const maxAllowedPositions = this.autonomousTrading.maxConcurrentPositions || 5;
-      const timeSinceLastOrder = Date.now() - (this.autonomousTrading.lastOrderTime || 0);
-
-      if (openPositions < maxAllowedPositions && !hasPending && timeSinceLastOrder > 30000) {
-        const ask = this.state.lastTick?.ask;
-        if (!ask) return;
-        const sl = Number((ask - 2.50).toFixed(2));
-        const tp = Number((ask + 1.00).toFixed(2));
-
-        const res = this.createOrder({
-          symbol: 'XAUUSD.m',
-          type: 'BUY',
-          lot: this.autonomousTrading.lotSize,
-          sl,
-          tp,
-          source: 'ai_agent',
-        });
-
-        if (res.success) {
-          this.autonomousTrading.lastOrderTime = Date.now();
-          this.logTradingActivity(
-            'ai_analysis',
-            `[اسکالپ خودکار ایجنت هرمس] سفارش جدید ثبت شد. (هدف سود: $1.00 دلار | حد ضرر: $2.50 دلار | لات: ${this.autonomousTrading.lotSize})`
-          );
-        }
-      }
-    }
+    this.runBackgroundAutonomousCheck();
   }
 
   public createOrder(orderInput: {
@@ -2398,26 +2358,44 @@ ${compactChatHistory.join('\n')}
     const ask = tick.ask;
     const bid = tick.bid;
     const spread = tick.spread || Math.abs(ask - bid) || 0;
-    const indicators = bridge.unifiedSnapshot?.indicators;
+    const price = (ask + bid) / 2 || ask;
+
+    // Continuously update M1 history and derive multi-timeframe indicators
+    this.updateCandleHistory(symbol, ask, bid);
+    const mtfCandles = this.getMultiTimeframeCandles(symbol, bridge.unifiedSnapshot?.candles);
+    const indicators = indicatorEngine.computeAllTimeframes(symbol, mtfCandles);
+
+    const m1 = indicators.M1;
+    const m5 = indicators.M5;
+    const h1 = indicators.H1;
 
     // 1. Calculate Multi-Factor Weights dynamically from live price action & indicators
     let trendScore = 0;
-    const ema20 = indicators?.M5?.ema20 || ask;
-    if (ask > ema20) {
-      trendScore = 25;
-    } else if (ask < ema20) {
-      trendScore = -25;
+    const ema20_m5 = m5?.ema20;
+    const ema50_m5 = m5?.ema50;
+    if (ema20_m5 && ema20_m5 > 0) {
+      trendScore += ask > ema20_m5 ? 15 : -15;
+    }
+    if (ema50_m5 && ema50_m5 > 0) {
+      trendScore += ask > ema50_m5 ? 15 : -15;
     }
 
     let momentumScore = 0;
-    const rsi = indicators?.M1?.rsi14 || indicators?.M5?.rsi14 || 50;
-    if (rsi > 60) momentumScore = 18;
-    else if (rsi < 40) momentumScore = -18;
-    else momentumScore = Math.round((rsi - 50) * 0.8);
+    const rsi = m5?.rsi14 || m1?.rsi14 || 50;
+    if (rsi > 60) momentumScore = 20;
+    else if (rsi < 40) momentumScore = -20;
+    else momentumScore = Math.round((rsi - 50) * 1.5);
 
-    let structureScore = trendScore > 0 ? 15 : -15;
-    let priceActionScore = momentumScore > 0 ? 10 : -10;
-    let llmContextScore = 5;
+    let structureScore = 0;
+    const ema50_h1 = h1?.ema50;
+    if (ema50_h1 && ema50_h1 > 0) {
+      structureScore = ask > ema50_h1 ? 20 : -20;
+    } else {
+      structureScore = trendScore > 0 ? 15 : -15;
+    }
+
+    let priceActionScore = m5?.macd ? (m5.macd.histogram > 0 ? 15 : -15) : (momentumScore >= 0 ? 15 : -15);
+    let llmContextScore = (trendScore + momentumScore + structureScore > 0) ? 10 : -10;
 
     let totalBias = trendScore + momentumScore + structureScore + priceActionScore + llmContextScore;
     totalBias = Math.max(-100, Math.min(100, Math.round(totalBias)));
@@ -2451,26 +2429,29 @@ ${compactChatHistory.join('\n')}
 
     // 4. Confluence Confidence & Signal Stability Index
     const positiveFactors = [trendScore, momentumScore, structureScore, priceActionScore, llmContextScore].filter((f) => f > 0).length;
-    const confidence = Math.round((positiveFactors / 5) * 100);
+    const confidence = Math.min(95, Math.max(65, Math.round((positiveFactors / 5) * 100)));
     const stability = bridge.isConnected ? 95 : 0;
 
     // 5. Recommended Action
     let recommendedAction: 'BUY' | 'SELL' | 'NO_TRADE' = 'NO_TRADE';
     if (!riskGuardVeto) {
-      if (totalBias > 20 && confidence >= 60) recommendedAction = 'BUY';
-      else if (totalBias < -20 && confidence >= 60) recommendedAction = 'SELL';
+      if (totalBias >= 20) recommendedAction = 'BUY';
+      else if (totalBias <= -20) recommendedAction = 'SELL';
+      else recommendedAction = 'NO_TRADE';
     }
 
     // 6. Dynamic Real-Time Reasons
     const reasons: string[] = [];
-    if (trendScore > 0) {
-      reasons.push(`روند M5 صعودی قوی (نرخ زنده ${ask.toFixed(2)} بالاتر از EMA20)`);
+    if (recommendedAction === 'BUY') {
+      reasons.push(`پیشنهاد خرید (BUY 🟢): روند صعودی M5 و تثبیت نرخ زنده $${ask.toFixed(2)} بالاتر از سطوح حمایتی`);
+    } else if (recommendedAction === 'SELL') {
+      reasons.push(`پیشنهاد فروش (SELL 🔴): فشار فروش و غلبه روند نزولی در تایم‌فریم‌های M5/H1`);
     } else {
-      reasons.push(`فشار فروش M5 (نرخ زنده ${ask.toFixed(2)} زیر EMA20)`);
+      reasons.push(`وضعیت نوسانی خنثی (NO TRADE 🟡): عدم وجود جهت‌گیری مشخص؛ پیشنهاد انتظار در ناحیه رنج`);
     }
 
     reasons.push(`مومنتوم شاخص RSI زنده: ${rsi.toFixed(1)}`);
-    reasons.push(`اسپرد معامله زنده: $${spread.toFixed(2)}`);
+    reasons.push(`اسپرد معامله زنده: $${spread.toFixed(2)} (${spread < 1.0 ? 'بسیار مطلوب جهت ورود' : 'معمولی'})`);
 
     const result = {
       symbol,

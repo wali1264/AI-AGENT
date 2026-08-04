@@ -56,10 +56,9 @@ export class StrategyEngine {
         htfConfluences.push(`روند خنثی یا رنج H1`);
       }
     } else {
-      // Dynamic market oscillator fallback: alternate trend based on price momentum or market wave
-      const wave = Math.sin(Date.now() / 30000); // 30s oscillator wave
-      htfTrend = wave > 0 ? 'BULLISH' : 'BEARISH';
-      htfConfluences.push(`تحلیل هوشمند جریان بازار طلا: ${htfTrend === 'BULLISH' ? 'صعودی (فشار خریداران)' : 'نزولی (فشار فروشندگان)'}`);
+      // Deterministic price action assessment based on current price structure
+      htfTrend = 'NEUTRAL';
+      htfConfluences.push('در انتظار تکمیل کندل‌های تایم‌فریم بالاتر (H1/H4)');
     }
 
     // 2. Analyze Lower Timeframe (LTF) Setup

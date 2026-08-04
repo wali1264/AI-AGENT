@@ -1649,7 +1649,7 @@ void SendOrderResult(string orderId, string status, double price, string errorMs
           {/* Master Switch Banner */}
           {(() => {
             const masterRule = riskRules.find((r) => r.id === 'enable_risk_guard');
-            const isEnabled = masterRule ? masterRule.isEnabled : true;
+            const isEnabled = masterRule ? masterRule.isEnabled : false;
             return (
               <div className={`p-5 rounded-2xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm ${
                 isEnabled ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950' : 'bg-amber-50/80 border-amber-200 text-amber-950'

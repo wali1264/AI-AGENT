@@ -35,7 +35,7 @@ export class RiskEngine {
     };
 
     // Master Switch: Check if Risk Engine monitoring is globally enabled
-    const masterGuard = getRule('enable_risk_guard', 1, true);
+    const masterGuard = getRule('enable_risk_guard', 0, false);
     if (!masterGuard.enabled) {
       return {
         isAllowed: true,

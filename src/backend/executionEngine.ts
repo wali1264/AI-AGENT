@@ -21,7 +21,7 @@ export class ExecutionEngine {
    */
   public processExecution(
     snapshot: UnifiedSnapshot,
-    userActiveFlag: boolean = true,
+    userActiveFlag: boolean = false,
     customTrailingConfig?: Partial<TrailingStopConfig>
   ): ExecutionEngineResult {
     const logs: string[] = [];
@@ -80,8 +80,8 @@ export class ExecutionEngine {
       this.evaluatePositionProtection(pos, ask, bid, config, modificationsToDispatch, logs);
     }
 
-    // 4. Signal-Driven Auto Order Generation
-    if (riskAssessment?.isAllowed && strategySignal && strategySignal.action !== 'HOLD') {
+    // 4. Signal-Driven Auto Order Generation (STRICT: Executed ONLY if user explicitly enabled autonomous trading)
+    if (userActiveFlag && riskAssessment?.isAllowed && strategySignal && strategySignal.action !== 'HOLD') {
       const signalAction = strategySignal.action;
       const confidence = strategySignal.confidenceScore;
 
