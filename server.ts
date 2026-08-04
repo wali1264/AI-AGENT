@@ -525,6 +525,18 @@ async function startServer() {
     });
   });
 
+  // Trading Agent API: Scalping Autonomous Analysis Engine (Phase 2)
+  app.post('/api/trading/autonomous-analyze', (req: Request, res: Response) => {
+    const { accountId, symbol } = req.body || {};
+    const analysis = tradingEngine.computeScalpingAnalysis(accountId, symbol || 'XAUUSD.m');
+    res.json({ success: true, analysis });
+  });
+
+  app.get('/api/trading/signal-history', (req: Request, res: Response) => {
+    const history = tradingEngine.getSignalSnapshots();
+    res.json({ success: true, history });
+  });
+
   // Trading Agent API: Memory & Instructions (Multi-Account Isolated)
   app.get('/api/trading/memory', (req: Request, res: Response) => {
     const accountId = req.query.accountId as string | undefined;

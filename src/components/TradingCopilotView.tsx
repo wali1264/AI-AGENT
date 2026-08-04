@@ -31,6 +31,7 @@ import {
   CopilotMode,
   TradingStyle,
 } from '../types';
+import { ScalpingCopilotPanel } from './ScalpingCopilotPanel';
 
 interface TradingCopilotViewProps {
   activeAccountId: string;
@@ -276,6 +277,12 @@ export const TradingCopilotView: React.FC<TradingCopilotViewProps> = ({
           </button>
         </div>
       )}
+
+      {/* Phase 1: Ultra-Compact AI Scalping Copilot Panel */}
+      <ScalpingCopilotPanel
+        activeAccountId={activeAccountId}
+        onRefreshState={onRefreshState}
+      />
 
       {/* Main 3-Column Grid Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
